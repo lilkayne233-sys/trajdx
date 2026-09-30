@@ -176,7 +176,8 @@ def test_source_edits_separates_library_from_scratch():
         edit(2, "reproduce_issue.py"),
         edit(3, "docs/index.md"),
     ]
-    assert source_edits(make_trajectory(steps)) == [0, 3]
+    # docs/config are not library source either
+    assert source_edits(make_trajectory(steps)) == [0]
 
 
 def test_never_verified_when_edits_precede_submit():
@@ -520,3 +521,84 @@ def test_termination_anomalies_never_charge_wasted_steps():
         for finding in TerminationAnomalyDetector().detect(run):
             if finding.detail["pattern"] in ("no_submit", "iteration_cap"):
                 assert finding.wasted_steps == ()
+
+
+def test_source_edits_counts_iteration_on_one_region_once():
+    """Pilot verdict: one function rewritten five times was reported as five edits."""
+    def rewrite(i, new):
+        step = edit(i, "src/pkg/core.py", payload=new)
+        step.args["old_str"] = "def f(x):\n    return x"
+        return step
+
+    steps = [rewrite(i, f"v{i}") for i in range(5)]
+    assert source_edits(make_trajectory(steps)) == [0]
+
+    steps.append(edit(5, "src/pkg/core.py", payload="other"))
+    steps[-1].args["old_str"] = "def g(y):\n    return y"
+    assert source_edits(make_trajectory(steps)) == [0, 5], "a different region is a new edit"
+
+
+def test_source_edits_skips_rejected_edits():
+    """An edit the tool refused wrote nothing, so it is not an edit."""
+    rejected = edit(0, "src/pkg/core.py")
+    rejected.observation = "ERROR:\nNo replacement was performed, old_str did not appear"
+    ok = edit(1, "src/pkg/core.py", payload="real")
+    assert source_edits(make_trajectory([rejected, ok])) == [1]
+
+    syntax = edit(0, "src/pkg/core.py")
+    syntax.observation = "Your proposed edit has introduced new syntax error(s). Please fix"
+    assert source_edits(make_trajectory([syntax])) == []
+
+
+def test_source_edits_keeps_edit_whose_output_merely_mentions_error():
+    step = edit(0, "src/pkg/core.py")
+    step.observation = "The file was edited:\n  raise ValueError('error: bad input')"
+    assert source_edits(make_trajectory([step])) == [0]
+
+
+def test_weak_verification_not_fired_by_padded_edit_count():
+    """5 rewrites of one region + 1 rejected + docs must not read as 'heavy editing'."""
+    steps = []
+    for i in range(5):
+        s = edit(i, "src/pkg/core.py", payload=f"v{i}")
+        s.args["old_str"] = "def f(x):\n    return x"
+        steps.append(s)
+    bad = edit(5, "src/pkg/core.py"); bad.observation = "ERROR:\nNo replacement was performed"
+    steps += [bad, edit(6, "README.md"), submit(7)]
+    assert WeakVerificationDetector().detect(make_trajectory(steps)) == []
+
+
+def test_loop_detector_ignores_errors_without_a_fingerprint():
+    """Three different failures that share only the placeholder are not a loop."""
+    steps = [
+        shell(0, "python a.py", observation="Exit code: 1"),
+        shell(1, "python b.py", observation="Exit code: 2"),
+        shell(2, "python c.py", observation="Exit code: 3"),
+        submit(3),
+    ]
+    findings = ExecutionLoopDetector().detect(make_trajectory(steps))
+    assert not [f for f in findings if f.detail.get("pattern") == "error"]
+
+
+def test_findings_command_never_emits_a_duplicate_finding_id(tmp_path):
+    """The same instance_id attempted twice must not be sampled (and labelled) twice."""
+    import json
+    from pathlib import Path as _P
+
+    from typer.testing import CliRunner
+
+    from trajdx.cli import app
+
+    src = _P(__file__).parent / "data" / "sweagent" / "pydicom__pydicom-1458.traj"
+    payload = json.loads(src.read_text(encoding="utf-8"))
+    data = tmp_path / "dup.jsonl"
+    data.write_text(json.dumps(payload) + "\n" + json.dumps(payload) + "\n", encoding="utf-8")
+    out = tmp_path / "out.jsonl"
+
+    result = CliRunner().invoke(app, ["findings", str(data), "--out", str(out)])
+    # A CLI error must fail the test loudly; an unwritten file would otherwise read
+    # as "no duplicates" and let this pass without testing anything.
+    assert result.exit_code == 0, result.output
+    ids = [json.loads(line)["finding_id"] for line in out.read_text(encoding="utf-8").splitlines() if line.strip()]
+    assert ids, "the fixture must yield at least one finding or this test proves nothing"
+    assert len(ids) == len(set(ids)), f"duplicate ids: {ids}"

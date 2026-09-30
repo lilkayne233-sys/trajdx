@@ -70,15 +70,15 @@ python scripts/evaluate.py --labels "data/labels/labelled_v3_*.jsonl" --markdown
 |---|---|---|---|
 | `execution_loop` | experimental | 100.0% | 1 |
 | `termination_anomaly` | core | 91.7% | 24 |
+| `weak_verification` | experimental | 66.7% | 3 |
 | `verification_gap` | experimental | 40.0% | 5 |
-| `weak_verification` | experimental | 33.3% | 6 |
 | `blind_search` | experimental | 0.0% | 1 |
 | `environment_stuck` | experimental | — | 0 |
 | `localization_failure` | experimental | — | 0 |
 | `redundant_read` | experimental | — | 0 |
-| **整体** | | **73.0%** | **37** |
+| **整体** | | **79.4%** | **34** |
 
-*评估每次都会用**当前代码重跑检测器**，再把已存的人工/大模型判决按 `finding_id` 对上。83 条已存判决里只有 37 条仍对应当前代码会报出的 finding，其余 46 条已失效、**不计分**（旧规则报过、新规则不再报）。所以下表 n 远小于旧表——旧表把已失效的判决也算进去了。*
+*评估每次都会用**当前代码重跑检测器**，再把已存的人工/大模型判决按 `finding_id` 对上。83 条已存判决里只有 34 条仍对应当前代码会报出的 finding，其余 49 条已失效、**不计分**（旧规则报过、新规则不再报）。所以下表 n 远小于旧表——旧表把已失效的判决也算进去了。*
 
 读表前先看 `n`：**`n=0`（显示为「—」）表示这条规则在该轮没有命中样本，而不是准确率
 100%，两者绝不能混读。** `redundant_read` 正是这种情形：它在未随仓库发布的轮次里拿到过

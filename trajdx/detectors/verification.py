@@ -20,27 +20,73 @@ from trajdx.detectors.base import (
     Tier,
     register_detector,
 )
-from trajdx.heuristics import is_test_or_scratch
-from trajdx.schema import StepKind, Trajectory
+from trajdx.heuristics import is_doc_or_config, is_test_or_scratch
+from trajdx.schema import AgentStep, StepKind, Trajectory
+
+#: An edit tool that refused the change reports it in the observation.  OpenHands'
+#: ``str_replace_editor`` starts with ``ERROR:``; SWE-agent rejects an edit that
+#: would introduce a syntax error.  Nothing was written, so it is not an edit.
+_EDIT_REJECTED = (
+    "error:",
+    "no replacement was performed",
+    "your proposed edit has introduced new syntax error",
+    "your edit was not applied",
+)
+
+
+def edit_was_rejected(step: AgentStep) -> bool:
+    # startswith only: a successful edit echoes file content, which may well
+    # contain the word "error:" somewhere in its first 200 characters.
+    obs = (step.observation or "").lstrip().lower()
+    return obs.startswith(_EDIT_REJECTED)
+
+
+def _edit_region(step: AgentStep) -> str | None:
+    """Identity of the code an edit rewrote, so repeated rewrites can be merged.
+
+    Two ``str_replace`` calls with the same ``old_str`` on the same file are one
+    piece of work being iterated on, not two independent changes.
+    """
+    old = step.args.get("old_str")
+    if not old:
+        return None
+    return " ".join(str(old).split())[:200]
 
 
 def source_edits(trajectory: Trajectory) -> list[int]:
     """Steps that modified *library source*, excluding tests and scratch scripts.
 
-    This distinction is the difference between a detector that works and one that
-    does not.  Agents constantly write a ``reproduce_issue.py`` and run it, and an
-    unfiltered edit count records that as heavy editing with no testing -- the
-    exact opposite of what happened.  LLM pre-annotation flagged this failure on
-    roughly a third of the verification findings, which is what prompted the fix.
+    Counting is deliberately strict, because every edit counted here is one more
+    edit the agent is accused of leaving untested:
+
+    * a **rejected** edit wrote nothing, so it is skipped;
+    * docs and project configuration are not source;
+    * rewriting the **same region** of the same file again is iteration on one
+      change and counts once (pilot verdict: one function rewritten five times
+      was reported as five edits).
+
+    The test/scratch filter is what makes this detector work at all.  Agents
+    constantly write a ``reproduce_issue.py`` and run it; an unfiltered edit count
+    records that as heavy editing with no testing -- the opposite of what happened.
     """
     out: list[int] = []
+    seen_regions: set[tuple[tuple[str, ...], str]] = set()
     for idx, step in enumerate(trajectory.steps):
         if step.kind is not StepKind.EDIT:
             continue
+        if edit_was_rejected(step):
+            continue
         files = step.files_touched
         # An edit we cannot attribute to a path is counted, to stay conservative.
-        if not files or not all(is_test_or_scratch(f) for f in files):
-            out.append(idx)
+        if files and all(is_test_or_scratch(f) or is_doc_or_config(f) for f in files):
+            continue
+        region = _edit_region(step)
+        if region is not None and files:
+            key = (tuple(files), region)
+            if key in seen_regions:
+                continue
+            seen_regions.add(key)
+        out.append(idx)
     return out
 
 

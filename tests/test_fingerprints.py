@@ -118,3 +118,22 @@ def test_an_unknown_exit_code_falls_back_to_text():
 def test_the_caller_may_supply_the_exit_code():
     assert classify_error("ValueError: bad", exit_code=0) == (None, None)
     assert classify_error("ValueError: bad", exit_code=1)[0] == "value_error"
+
+
+def test_unclassifiable_error_gets_no_placeholder_fingerprint():
+    """A bare 'generic_error:generic_error' fingerprint made unrelated failures
+    look identical to the loop detector (a pilot verdict caught this)."""
+    kind, fp = classify_error("Error")
+    assert kind == "generic_error"
+    assert fp is None, "no information means no fingerprint, not a shared placeholder"
+
+
+def test_generic_error_fingerprint_uses_the_line_that_matched():
+    _, a = classify_error("Error: the first thing broke")
+    _, b = classify_error("Error: a completely different thing broke")
+    assert a and b and a != b
+
+
+def test_generic_error_with_a_real_signature_keeps_it():
+    kind, fp = classify_error("Traceback (most recent call last):\n  File 'x'\nfoo.BarError: boom 42")
+    assert fp is not None and "generic_error:generic_error" != fp

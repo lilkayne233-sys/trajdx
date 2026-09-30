@@ -76,15 +76,15 @@ python scripts/evaluate.py --labels "data/labels/labelled_v3_*.jsonl" --markdown
 |---|---|---|---|
 | `execution_loop` | experimental | 100.0% | 1 |
 | `termination_anomaly` | core | 91.7% | 24 |
+| `weak_verification` | experimental | 66.7% | 3 |
 | `verification_gap` | experimental | 40.0% | 5 |
-| `weak_verification` | experimental | 33.3% | 6 |
 | `blind_search` | experimental | 0.0% | 1 |
 | `environment_stuck` | experimental | — | 0 |
 | `localization_failure` | experimental | — | 0 |
 | `redundant_read` | experimental | — | 0 |
-| **overall** | | **73.0%** | **37** |
+| **overall** | | **79.4%** | **34** |
 
-*The evaluation **re-runs the current detectors** every time and matches stored verdicts to the findings by `finding_id`. Of 83 stored verdicts only 37 still correspond to a finding the current code emits; the other 46 are stale and **not scored** (an old rule flagged them, the new rule does not). That is why n is far smaller than in the previous table, which scored stale verdicts too.*
+*The evaluation **re-runs the current detectors** every time and matches stored verdicts to the findings by `finding_id`. Of 83 stored verdicts only 34 still correspond to a finding the current code emits; the other 49 are stale and **not scored** (an old rule flagged them, the new rule does not). That is why n is far smaller than in the previous table, which scored stale verdicts too.*
 
 Read `n` before you read the precision: **`n=0` (shown as "—") means the rule
 produced no findings in this round, not that it was 100% correct — the two must

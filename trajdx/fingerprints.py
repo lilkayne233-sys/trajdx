@@ -228,7 +228,22 @@ def classify_error(observation: str | None, *, exit_code: int | None = None) -> 
 
     # Last resort: a traceback-shaped blob we could not classify.
     if _GENERIC_ERROR.search(text):
-        return "generic_error", f"generic_error:{_extract_signature('generic_error', text)}"
+        signature = _extract_signature("generic_error", text)
+        if signature == "generic_error":
+            # `generic_error` has no rule of its own, so the extractor falls back to
+            # the bare kind name.  Use the line that actually tripped the generic
+            # pattern instead: it is the only information available.
+            match = _GENERIC_ERROR.search(text)
+            start = text.rfind("\n", 0, match.start()) + 1
+            end = text.find("\n", match.end())
+            signature = _normalize_signature(text[start: end if end != -1 else len(text)])
+        if not signature or signature.lower() in ("generic_error", "error", "exception", "errors"):
+            # Still nothing informative: a placeholder fingerprint would be identical
+            # for every unrelated failure, letting the loop detector call two
+            # different errors "the same error" (a pilot verdict caught exactly
+            # that).  The step is still an error; withhold the fingerprint.
+            return "generic_error", None
+        return "generic_error", f"generic_error:{signature}"
 
     return None, None
 

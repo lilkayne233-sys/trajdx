@@ -297,10 +297,23 @@ def findings(
     rng = random.Random(seed)
     trajectories = _load(data, framework, limit, gold=gold)
 
+    # ``finding_id`` is the join key against stored verdicts, so it must be unique.
+    # It is not automatically: a run that appears twice in the input (the same
+    # ``instance_id`` attempted twice) yields the same id twice, and a duplicate
+    # would be sampled -- and labelled -- twice.  Keep the first, say how many.
     buckets: dict[str, list[tuple[Trajectory, object]]] = {}
+    seen_ids: set[str] = set()
+    dropped = 0
     for trajectory in trajectories:
         for finding in detect_all(trajectory):
+            fid = f"{trajectory.instance_id}|{finding.detector}|{finding.start}"
+            if fid in seen_ids:
+                dropped += 1
+                continue
+            seen_ids.add(fid)
             buckets.setdefault(finding.detector, []).append((trajectory, finding))
+    if dropped:
+        console.print(f"[yellow]dropped {dropped} finding(s) whose finding_id already appeared[/]")
 
     rows = []
     for detector, items in sorted(buckets.items()):
