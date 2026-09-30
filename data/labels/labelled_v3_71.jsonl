@@ -1,0 +1,10 @@
+{"finding_id": "tobymao__sqlglot-3682|verification_gap|92", "verdict": "valid", "reason": "parser.py edited at steps 93 and 99 after the step-92 test; never rerun."}
+{"finding_id": "iterative__dvc-1494|verification_gap|87", "verdict": "valid", "reason": "step-97 edit to dvc/state.py (821B) after step-87 test; nothing rerun after."}
+{"finding_id": "stfc__PSyclone-2309|verification_gap|83", "verdict": "valid", "reason": "steps 98-99 edit fparser2.py (2973B, 2975B) after step-83 test, unverified."}
+{"finding_id": "xonsh__xonsh-3107|verification_gap|87", "verdict": "valid", "reason": "tools.py edited steps 94-97 (1627B, 513B, 649B) after step-87 pytest; only ad-hoc check."}
+{"finding_id": "geopandas__geopandas-2542|verification_gap|72", "verdict": "invalid", "reason": "Post-step-72 edits touch only final_verification.py and IMPLEMENTATION_SUMMARY.md; no source change."}
+{"finding_id": "falconry__falcon-2366|verification_gap|53", "verdict": "valid", "reason": "multipart.py edits at steps 96-98 after last test; only py_compile checks, no test."}
+{"finding_id": "omni-us__jsonargparse-560|verification_gap|66", "verdict": "invalid", "reason": "Final edit step 98 creates scratch original_repro.py; _typehints.py edit verified by step-97 run."}
+{"finding_id": "MAIF__arta-37|verification_gap|92", "verdict": "valid", "reason": "Step-98 edit to src/arta/_engine.py (482B) after step-92 test; never rerun."}
+{"finding_id": "falconry__falcon-2366|weak_verification|37", "verdict": "valid", "reason": "~20 substantive multipart.py edits against one pytest run; project suite essentially never run."}
+{"finding_id": "wyfo__apischema-259|weak_verification|31", "verdict": "invalid", "reason": "10 edits vs 7 runs; several edits just create scratch debug scripts; not lopsided."}

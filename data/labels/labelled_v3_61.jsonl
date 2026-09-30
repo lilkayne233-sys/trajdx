@@ -1,0 +1,10 @@
+{"finding_id": "iossifovlab__gpf-446|termination_anomaly|99", "verdict": "valid", "reason": "Trajectory ends at idx 99 pytest shell command; no submit/finish action appears anywhere."}
+{"finding_id": "mne-tools__mne-python-12080|termination_anomaly|99", "verdict": "valid", "reason": "exit_status is the 100/100 iteration cap; final idx 99 step is rm, no submit."}
+{"finding_id": "tobymao__sqlglot-3682|termination_anomaly|99", "verdict": "valid", "reason": "exit_status reports max iteration 100/100; run ends on parser.py edit at idx 99."}
+{"finding_id": "PennyLaneAI__pennylane-3386|termination_anomaly|42", "verdict": "invalid", "reason": "idx 51,53,61,62 edit library source pennylane/ops/qubit/non_parametric_ops.py, so patch was not test-only."}
+{"finding_id": "fronzbot__blinkpy-401|termination_anomaly|99", "verdict": "valid", "reason": "exit_status is the 100/100 iteration cap; ends at idx 99 git diff, no submit."}
+{"finding_id": "asottile__pyupgrade-195|verification_gap|42", "verdict": "invalid", "reason": "After idx 42 test, idx 49 creates scratch edge_cases.py; idx 46 pyupgrade.py edit failed, no change."}
+{"finding_id": "pandas-dev__pandas-61158|verification_gap|48", "verdict": "invalid", "reason": "Edits at idx 49,51,55 create scratch validation scripts only; source fix preceded; run submitted at 57."}
+{"finding_id": "miyuchina__mistletoe-57|verification_gap|91", "verdict": "invalid", "reason": "Later edits are DEBUG prints; idx 99 re-ran mistletoe after idx 98 edit, so change was checked."}
+{"finding_id": "tobymao__sqlglot-8|verification_gap|86", "verdict": "valid", "reason": "Library source tokens.py/expressions.py/parser.py edited at idx 89,95,97,99; no execution after idx 87."}
+{"finding_id": "tobymao__sqlglot-3682|verification_gap|40", "verdict": "invalid", "reason": "reproduce_issue.py executed at idx 90,92,96,99 against edits; tight edit-run loop, not a verification gap."}

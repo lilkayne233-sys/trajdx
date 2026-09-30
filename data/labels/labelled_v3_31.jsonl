@@ -1,0 +1,10 @@
+{"finding_id": "jmoiron__humanize-107|execution_loop|30", "verdict": "invalid", "reason": "'except AttributeError:' is source text, not a live error; edits differ (573/630/628/602/575B) and test outputs changed."}
+{"finding_id": "hylang__hy-1374|execution_loop|37", "verdict": "invalid", "reason": "compiler.py edited at idx38 (277B) and idx43 (2795B) between runs; idx44 was a harness error, not a repeat."}
+{"finding_id": "canonical__charmcraft-1823|execution_loop|37", "verdict": "invalid", "reason": "test_reproduction.py edited at idx38 (2595B) and idx44 (3012B) between runs; tracebacks differ (lines 168/176/172)."}
+{"finding_id": "fronzbot__blinkpy-401|execution_loop|47", "verdict": "invalid", "reason": "Fingerprint is the script docstring; edits differ (4380/2324/2793/1709B) and runs at idx51/56 changed behavior."}
+{"finding_id": "Materials-Consortia__optimade-python-tools-582|execution_loop|26", "verdict": "invalid", "reason": "Scratch script edited at idx27 (600B) and idx29 (423B) between runs; idx30 run produced different output."}
+{"finding_id": "networkx__networkx-2386|termination_anomaly|17", "verdict": "invalid", "reason": "Real library source matching.py edited at idx30 (1709B), fixing the issue; patch not test-only."}
+{"finding_id": "miyuchina__mistletoe-57|termination_anomaly|99", "verdict": "valid", "reason": "exit_status states 'maximum iteration: 100, max iteration: 100'; run genuinely cut off by step cap."}
+{"finding_id": "OpenMined__PySyft-2560|termination_anomaly|99", "verdict": "valid", "reason": "exit_status states 'maximum iteration: 100, max iteration: 100'; run genuinely cut off by step cap."}
+{"finding_id": "iterative__dvc-1494|termination_anomaly|99", "verdict": "valid", "reason": "exit_status states 'maximum iteration: 100, max iteration: 100'; run genuinely cut off by step cap."}
+{"finding_id": "psf__black-3451|termination_anomaly|99", "verdict": "valid", "reason": "exit_status states 'maximum iteration: 100, max iteration: 100'; run genuinely cut off by step cap."}

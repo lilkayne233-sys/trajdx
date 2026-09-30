@@ -1,0 +1,10 @@
+{"finding_id": "tobymao__sqlglot-3290|blind_search|30", "verdict": "invalid", "reason": "idx30 range [3462,3480] vs idx31 [3462,3510]; parser.py edited at idx32 before idx51"}
+{"finding_id": "PennyLaneAI__pennylane-963|blind_search|63", "verdict": "valid", "reason": "idx63, idx69, idx70 all view qubit.py [1065,1075], no intervening edit; byte-identical content"}
+{"finding_id": "tobymao__sqlglot-2529|blind_search|10", "verdict": "valid", "reason": "idx16 and idx25 both view snowflake.py [347,365] with no edit between; identical content re-read"}
+{"finding_id": "materialsvirtuallab__monty-728|blind_search|15", "verdict": "invalid", "reason": "Ranges differ: [880,1030], [993,1000], [990,1010]; idx57 follows idx39 edit, changed content"}
+{"finding_id": "Clinical-Genomics__scout-676|blind_search|15", "verdict": "invalid", "reason": "Coherent trace of variants feature (forms, constants, views, controllers, query); normal exploration, not flailing"}
+{"finding_id": "mesonbuild__meson-12210|blind_search|18", "verdict": "invalid", "reason": "Ranges differ: [1080,1120], [1075,1105], [1085,1105]; idx40 reads post-idx29-edit code"}
+{"finding_id": "cdent__gabbi-238|blind_search|10", "verdict": "invalid", "reason": "Ranges differ: [475,495], [481,495], [481,498]; idx59 post-edit shows new None guard"}
+{"finding_id": "sunpy__sunpy-5915|blind_search|11", "verdict": "invalid", "reason": "Ranges differ: [260,280], [255,280], [255,285]; idx47 reads code changed by idx36 edit"}
+{"finding_id": "tobymao__sqlglot-444|blind_search|23", "verdict": "invalid", "reason": "Ranges differ; idx51 repeats idx42 range but parser.py was edited at idx48 between"}
+{"finding_id": "cityofaustin__knackpy-110|blind_search|12", "verdict": "valid", "reason": "idx12 and idx34 both read models.py in full, unchanged between; identical content re-read"}

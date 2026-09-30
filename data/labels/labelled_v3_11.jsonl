@@ -1,0 +1,10 @@
+{"finding_id": "Materials-Consortia__optimade-python-tools-582|execution_loop|20", "verdict": "invalid", "reason": "Reruns print test-script results, not identical live errors; idx 32 source edit made Case 1 pass at idx 33."}
+{"finding_id": "omni-us__jsonargparse-564|execution_loop|27", "verdict": "invalid", "reason": "idx 30/32 runs returned different errors, and idx 32 reproduced the target dump failure: genuine debugging, not thrash."}
+{"finding_id": "ReproNim__neurodocker-623|execution_loop|80", "verdict": "invalid", "reason": "renderers.py edited with distinct payloads (1944/2375/2582 bytes) between runs at idx 81/83/85; each rerun verifies a fix."}
+{"finding_id": "buildout__buildout-452|execution_loop|11", "verdict": "valid", "reason": "Three import attempts (idx 11/13/15) all hit ModuleNotFoundError for zc.buildout; no edit ever made, error never changed."}
+{"finding_id": "sphinx-gallery__sphinx-gallery-480|execution_loop|24", "verdict": "invalid", "reason": "Source edits at idx 27/29 and script edit at 31 intervened; each rerun verifies a fix, not a redundant repeat."}
+{"finding_id": "yt-project__unyt-476|execution_loop|43", "verdict": "invalid", "reason": "Distinct view_ranges (140-150, 270-280, 300-350) and distinct edit payloads: a coherent base_value rename, not thrash."}
+{"finding_id": "iterative__dvc-1494|execution_loop|78", "verdict": "invalid", "reason": "Runs at idx 78/80/82 each gave a different error; edits at 79/81/83 differ: iterative reproduction-script debugging, not thrash."}
+{"finding_id": "ReproNim__neurodocker-623|execution_loop|55", "verdict": "invalid", "reason": "debug_header.py created at 58 and renderers.py edited at 71 (1762 bytes) between probes; each run tests a new change."}
+{"finding_id": "numba__numba-6083|execution_loop|17", "verdict": "valid", "reason": "idx 23 and 24 repeat the identical view_range [434,450] with identical content, nothing changed in between."}
+{"finding_id": "tinosulzer__PyBaMM-170|execution_loop|79", "verdict": "invalid", "reason": "LCO.csv edited with differing payloads (67/97/72 bytes) at idx 81/85 between failing runs; reruns verify parameter fixes."}

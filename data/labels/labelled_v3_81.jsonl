@@ -1,0 +1,9 @@
+{"finding_id": "tobymao__sqlglot-8|weak_verification|32", "verdict": "valid", "reason": "15 substantive multi-file source edits (parser, tokens, expressions, generator, dialects); no pytest run, bug unfixed."}
+{"finding_id": "tobymao__sqlglot-3682|weak_verification|41", "verdict": "invalid", "reason": "Edits mostly temporary debug prints; reproduce_issue.py re-run after nearly every edit (86, 90, 92, 96)."}
+{"finding_id": "NCAS-CMS__cfdm-114|weak_verification|40", "verdict": "invalid", "reason": "netcdfread.py fix iterated; reproduce_issue.py run after each edit batch (52, 58, 78, 86, 93)."}
+{"finding_id": "zarr-developers__zarr-python-2795|weak_verification|73", "verdict": "invalid", "reason": "All edits are one array.py fix; reproduction run at 83 and 89 between edit batches."}
+{"finding_id": "xonsh__xonsh-3107|weak_verification|64", "verdict": "invalid", "reason": "Count inflated by failed edit attempts (65, 77, 86, 90, 93); pytest ran after edit batches (66, 78, 87)."}
+{"finding_id": "omni-us__jsonargparse-560|weak_verification|33", "verdict": "invalid", "reason": "One _typehints.py fix with debug prints; reproduce_issue.py verification run constantly between edits."}
+{"finding_id": "facelessuser__pymdown-extensions-1043|weak_verification|39", "verdict": "invalid", "reason": "language_prefix plumbing is one feature; verification commands run constantly (60, 72, 79, 86, 96, 99)."}
+{"finding_id": "sqlfluff__sqlfluff-4239|weak_verification|54", "verdict": "invalid", "reason": "13 edits iterate one reindent.py comment block; 8 test runs plus debug_issue.py after each edit."}
+{"finding_id": "pynamodb__PynamoDB-386|weak_verification|55", "verdict": "invalid", "reason": "reproduce_issue.py or pytest test_loads run after nearly every models.py edit (56, 66, 71, 88, 96)."}

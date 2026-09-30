@@ -1,0 +1,10 @@
+{"finding_id": "elastic__rally-436|termination_anomaly|99", "verdict": "valid", "reason": "Steps 97-99 grep then view driver.py; run ends at the 100-step cap, no submit action."}
+{"finding_id": "frictionlessdata__frictionless-py-1045|termination_anomaly|99", "verdict": "valid", "reason": "exit_status 'Agent reached maximum iteration: 100, max iteration: 100'; step 99 pytest observation is empty, killed mid-command."}
+{"finding_id": "dwavesystems__dwave-system-373|termination_anomaly|99", "verdict": "valid", "reason": "Step 99 grep 'properties.version' is the last action; no submit/finish step appears in this capped run."}
+{"finding_id": "NCAS-CMS__cfdm-114|termination_anomaly|99", "verdict": "valid", "reason": "Steps 97-99 grep and view netcdfread.py; trajectory stops at iteration 100 without submitting."}
+{"finding_id": "dask__dask-6564|termination_anomaly|99", "verdict": "valid", "reason": "Steps 97-99 create and run understand_execution_flow.py, then create test file; no submit step."}
+{"finding_id": "iterative__dvc-1494|termination_anomaly|99", "verdict": "valid", "reason": "Steps 97-99 edit dvc/state.py then two task_tracker calls; run ends mid-planning, never submits."}
+{"finding_id": "tobymao__sqlglot-4106|termination_anomaly|99", "verdict": "valid", "reason": "Steps 97-99 run unittest and test_edge_cases.py; step 99 test_duckdb never returns a result, no submit."}
+{"finding_id": "elastic__rally-436|termination_anomaly|99", "verdict": "valid", "reason": "exit_status 'Agent reached maximum iteration: 100, max iteration: 100'; steps 97-99 only grep and view."}
+{"finding_id": "reframe-hpc__reframe-2533|termination_anomaly|99", "verdict": "valid", "reason": "exit_status 'Agent reached maximum iteration: 100, max iteration: 100'; steps 97-99 edit/run scratch test, no submit."}
+{"finding_id": "PennyLaneAI__pennylane-3386|termination_anomaly|42", "verdict": "valid", "reason": "Patch lists only reproduce_issue.py and test_edge_cases.py; non_parametric_ops.py fix left git-stashed at step 96."}

@@ -1,0 +1,10 @@
+{"finding_id": "tobymao__sqlglot-8|verification_gap|86", "verdict": "valid", "reason": "Edits to tokens.py/expressions.py/parser.py at idx 89,95,97,99 after last test idx 86; never executed."}
+{"finding_id": "geopandas__geopandas-2542|verification_gap|72", "verdict": "invalid", "reason": "Final 'edit' idx 82 is IMPLEMENTATION_SUMMARY.md; library untouched after test idx 72, verification script rerun at 76/78."}
+{"finding_id": "pandas-dev__pandas-61158|verification_gap|48", "verdict": "invalid", "reason": "Later edits idx 49,51,55 are demo scripts, each run after creation (50,52,56); pytest 48 failed on env ImportError."}
+{"finding_id": "tobymao__sqlglot-3682|verification_gap|92", "verdict": "valid", "reason": "parser.py library edits at idx 93 and 99 after last test idx 92; final edit idx 99 never executed."}
+{"finding_id": "omni-us__jsonargparse-560|weak_verification|33", "verdict": "valid", "reason": "24 counted edits include 22 to jsonargparse/_typehints.py; only 3 pytest runs across the whole trajectory."}
+{"finding_id": "zarr-developers__zarr-python-2795|weak_verification|73", "verdict": "invalid", "reason": "Only 7 array.py edits, each exercised by reproduce_issue.py/debug_parents.py runs at idx 83,89,91,98; not lopsided."}
+{"finding_id": "falconry__falcon-2366|weak_verification|37", "verdict": "valid", "reason": "22 counted edits to falcon/media/multipart.py, repeatedly syntax-broken and git-checked-out (idx 66,93), against 1 test run."}
+{"finding_id": "xonsh__xonsh-3107|weak_verification|64", "verdict": "invalid", "reason": "Five counted edits failed (idx 65,77,86,90,93); final feature verified by pytest idx 87 and python -c idx 98."}
+{"finding_id": "tobymao__sqlglot-3682|weak_verification|41", "verdict": "valid", "reason": "19 real parser.py edits (debug prints added, then git checkout at idx 83) against only 3 test runs."}
+{"finding_id": "wyfo__apischema-259|weak_verification|31", "verdict": "invalid", "reason": "compare_with_deserialization.py and simple_debug.py misclassified as source; only 8 library edits vs 7 test runs."}

@@ -1,0 +1,10 @@
+{"finding_id": "xonsh__xonsh-3107|blind_search|61", "verdict": "valid", "reason": "Reads 61 and 88 both 3165:3175 on unedited base.py; call site re-read 27 steps later, nothing learned."}
+{"finding_id": "tobymao__sqlglot-3682|blind_search|67", "verdict": "invalid", "reason": "parser.py edited at steps 80,81,90,91,93 before read 94; read 71 also widened range to 4395:4410."}
+{"finding_id": "jbradberry__universe-31|blind_search|18", "verdict": "invalid", "reason": "All three reads errored on invalid view_range ([110,122],[124,137],[124,141]); no identical content returned."}
+{"finding_id": "simphony__simphony-remote-117|blind_search|10", "verdict": "invalid", "reason": "container.py edited at step 36 between reads 16 and 48; read 48 checks own fix, not blind repetition."}
+{"finding_id": "falconry__falcon-2366|blind_search|15", "verdict": "invalid", "reason": "Ranges differ (370:420, 370:400, 370:410) and multipart.py edited at steps 37-70 before read 73."}
+{"finding_id": "NeurodataWithoutBorders__pynwb-381|blind_search|19", "verdict": "invalid", "reason": "ogen.py edited at steps 41-42; ranges differ (full file, 1:15, 1:35), read 55 checks post-edit imports."}
+{"finding_id": "miyuchina__mistletoe-57|blind_search|39", "verdict": "valid", "reason": "html_renderer.py unedited; identical range 146:157 read at steps 39, 54, 60, nothing new learned."}
+{"finding_id": "stefankoegl__python-json-patch-112|blind_search|24", "verdict": "invalid", "reason": "Ranges all differ (430:450, 450:480, 459:475, 437:471); jsonpatch.py edited at 41-42 before reads 44-47."}
+{"finding_id": "fronzbot__blinkpy-401|blind_search|10", "verdict": "invalid", "reason": "Reads target different functions: 140:150 vs 265:275 (get_owl_info, get_camera_info); content not identical."}
+{"finding_id": "asottile__pyupgrade-195|blind_search|16", "verdict": "invalid", "reason": "pyupgrade.py edited at step 22 before read 39 in that region; ranges differ (585:600, 1984:2020, 586:600)."}

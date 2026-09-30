@@ -1,0 +1,10 @@
+{"finding_id": "dwavesystems__dwave-system-373|termination_anomaly|99", "verdict": "valid", "reason": "exit_status 'Current iteration: 100, max iteration: 100' confirms the run hit the step budget."}
+{"finding_id": "falconry__falcon-2366|verification_gap|53", "verdict": "valid", "reason": "Final library edits 96-98 to multipart.py only checked by py_compile at 99; never functionally tested."}
+{"finding_id": "omni-us__jsonargparse-560|verification_gap|66", "verdict": "invalid", "reason": "Step 97 reproduce_issue.py rerun after final source edits printed correct config, exit 0 - checked."}
+{"finding_id": "miyuchina__mistletoe-57|verification_gap|91", "verdict": "invalid", "reason": "Step 99 python -c exercised block_tokenizer.py after final edit 98, so the final state was checked."}
+{"finding_id": "asottile__pyupgrade-195|verification_gap|42", "verdict": "invalid", "reason": "Step 46 source edit failed; only scratch edge_cases.py created later, then exercised at step 48."}
+{"finding_id": "xonsh__xonsh-3107|verification_gap|87", "verdict": "invalid", "reason": "Step 98 python -c exercised expand_path/expansion_context after final edit 97 - verification did occur."}
+{"finding_id": "stfc__PSyclone-2309|verification_gap|83", "verdict": "valid", "reason": "Final edits 98-99 both touch fparser2.py library source; no test since step 83, only debug scripts."}
+{"finding_id": "iterative__dvc-1494|verification_gap|87", "verdict": "valid", "reason": "Step 97 edited dvc/state.py library source; steps 98-99 are only task-tracker views, no test run."}
+{"finding_id": "tobymao__sqlglot-3682|verification_gap|40", "verdict": "invalid", "reason": "Step 99 reran reproduce_issue.py after edits 97-98, exercising the final state rather than leaving it unchecked."}
+{"finding_id": "MAIF__arta-37|verification_gap|92", "verdict": "valid", "reason": "Step 98 edited src/arta/_engine.py; only a read follows and no test ran since step 92."}

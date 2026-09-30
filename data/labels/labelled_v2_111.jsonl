@@ -1,0 +1,5 @@
+{"finding_id": "pynamodb__PynamoDB-386|weak_verification|55", "verdict": "invalid", "reason": "Failed no-op edit idx 61 counted; repro script re-run after nearly every models.py edit (56, 66, 68, 71, 83, 85)."}
+{"finding_id": "tobymao__sqlglot-8|weak_verification|32", "verdict": "invalid", "reason": "No-op errored edit idx 65 counted; behavior tests ran at 46, 53, 61, 67, 82, 84, 86, 87 alongside edits."}
+{"finding_id": "facelessuser__pymdown-extensions-1043|weak_verification|39", "verdict": "invalid", "reason": "No-op edit idx 53 counted; test_language_prefix.py and python -c probes ran constantly (59, 72, 86, 96, 99)."}
+{"finding_id": "NCAS-CMS__cfdm-114|weak_verification|40", "verdict": "invalid", "reason": "Repro and debug scripts run after most source edits (52, 58, 78, 86); 8 edits not sparsely verified."}
+{"finding_id": "sqlfluff__sqlfluff-4239|weak_verification|54", "verdict": "invalid", "reason": "debug_issue.py re-run after every reindent.py edit; L003 pytest suite passed 105 tests (idx 92)."}

@@ -1,0 +1,10 @@
+{"finding_id": "python-cmd2__cmd2-595|execution_loop|40", "verdict": "invalid", "reason": "Spurious error fingerprint: step 40 edit, 56 read, 59 git diff all succeeded; no live failure repeated."}
+{"finding_id": "pre-commit__pre-commit-778|execution_loop|9", "verdict": "invalid", "reason": "Steps 9/14/15 succeeded; step 27 CalledProcessError was deliberate reproduction, output says 'as expected'."}
+{"finding_id": "cdent__gabbi-238|execution_loop|44", "verdict": "invalid", "reason": "Quoted 'except TypeError as exc:' is source text at case.py:490; edit 45 fixed it, rerun 46 passed."}
+{"finding_id": "conan-io__conan-14296|execution_loop|30", "verdict": "invalid", "reason": "Four reads cover different ranges (60-80,1-40,45-65,53-90); fingerprint is source text at line 63."}
+{"finding_id": "falconry__falcon-2366|execution_loop|83", "verdict": "invalid", "reason": "File edited at 84-86 (55/188/1197 bytes) and 91 between compile runs; each rerun checked latest edit."}
+{"finding_id": "conan-io__conan-14296|execution_loop|30", "verdict": "invalid", "reason": "Four views cover different regions (60-80,1-40,45-65,53-90) of layout.py; not a redundant repeat."}
+{"finding_id": "beeware__briefcase-1638|execution_loop|9", "verdict": "invalid", "reason": "Step 24 rerun after edit 23 reports 'ISSUE FIXED'; step 21 output is the repro script's own prints."}
+{"finding_id": "sqlfluff__sqlfluff-4239|execution_loop|70", "verdict": "invalid", "reason": "Edits to reindent.py at 71,73,75,76,78 (1305-2190 bytes) separate every debug run; edit-then-verify rhythm."}
+{"finding_id": "Skyscanner__cfripper-80|execution_loop|37", "verdict": "invalid", "reason": "Substantive library edits at 47,52,54,56 between runs; logs change at 53/55, so not a static repeat."}
+{"finding_id": "mit-ll-responsible-ai__hydra-zen-459|execution_loop|53", "verdict": "invalid", "reason": "Fingerprint is source text at _utils.py:640; steps 67/68/69 are one view plus substantive edits."}

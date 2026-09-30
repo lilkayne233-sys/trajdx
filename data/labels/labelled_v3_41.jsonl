@@ -1,0 +1,10 @@
+{"finding_id": "xonsh__xonsh-3107|termination_anomaly|99", "verdict": "valid", "reason": "exit_status explicit: 'maximum iteration. Current iteration: 100, max iteration: 100'."}
+{"finding_id": "facelessuser__pymdown-extensions-1043|termination_anomaly|99", "verdict": "valid", "reason": "exit_status explicit: 'maximum iteration. Current iteration: 100, max iteration: 100'."}
+{"finding_id": "elastic__rally-436|termination_anomaly|99", "verdict": "valid", "reason": "exit_status explicit: 'maximum iteration. Current iteration: 100, max iteration: 100'."}
+{"finding_id": "falconry__falcon-2366|termination_anomaly|99", "verdict": "valid", "reason": "exit_status explicit: 'maximum iteration. Current iteration: 100, max iteration: 100'."}
+{"finding_id": "omni-us__jsonargparse-560|termination_anomaly|99", "verdict": "valid", "reason": "exit_status explicit: 'maximum iteration. Current iteration: 100, max iteration: 100'."}
+{"finding_id": "tobymao__sqlglot-3272|termination_anomaly|99", "verdict": "valid", "reason": "Final idx 97-99 are view/grep/python steps; no submit action appears."}
+{"finding_id": "xonsh__xonsh-3107|termination_anomaly|99", "verdict": "valid", "reason": "Trajectory ends idx 99 with a read after edit/shell; no submit action."}
+{"finding_id": "PennyLaneAI__pennylane-3386|termination_anomaly|99", "verdict": "valid", "reason": "Final idx 97-99 are pytest and file views; no submit action appears."}
+{"finding_id": "ReproNim__neurodocker-623|termination_anomaly|99", "verdict": "valid", "reason": "exit_status explicit: 'maximum iteration. Current iteration: 100, max iteration: 100'."}
+{"finding_id": "dwavesystems__dwave-system-373|termination_anomaly|99", "verdict": "valid", "reason": "exit_status explicit: 'maximum iteration. Current iteration: 100, max iteration: 100'."}

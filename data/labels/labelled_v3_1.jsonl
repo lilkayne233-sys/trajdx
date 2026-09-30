@@ -1,0 +1,10 @@
+{"finding_id": "Clinical-Genomics__scout-676|blind_search|15", "verdict": "invalid", "reason": "Coherent path through variants blueprint (views, controllers, constants, query.py); distinct files and ranges, no repeats."}
+{"finding_id": "miyuchina__mistletoe-57|blind_search|39", "verdict": "valid", "reason": "html_renderer.py lines 146-157 re-read at steps 54, 60 with no intervening source edit; identical content."}
+{"finding_id": "numba__numba-6083|blind_search|19", "verdict": "valid", "reason": "containers.py 434-450 read back-to-back at steps 23 and 24; no edit between, identical content."}
+{"finding_id": "tinosulzer__PyBaMM-170|blind_search|34", "verdict": "valid", "reason": "single_particle_model.py 85-95 re-read at 52, 96; only CSV/test/scratch files changed, model source never modified."}
+{"finding_id": "PennyLaneAI__pennylane-963|blind_search|63", "verdict": "valid", "reason": "qubit.py 1065-1075 read identically at steps 63, 69, 70; file never edited, nothing new learned."}
+{"finding_id": "python-pillow__Pillow-5089|execution_loop|48", "verdict": "invalid", "reason": "Error tagged on successful Image.py edits, not live failures; payloads differ, later test runs progressed."}
+{"finding_id": "falconry__falcon-2366|execution_loop|83", "verdict": "invalid", "reason": "File edited between each compile (55-1197 byte payloads); errors differ (line 417 vs 443), not an identical repeat."}
+{"finding_id": "dpkp__kafka-python-1312|execution_loop|59", "verdict": "invalid", "reason": "conn.py edited (650/713 bytes) before each rerun to verify fixes; DNS error is the debug script's expected premise."}
+{"finding_id": "iterative__dvc-1457|execution_loop|28", "verdict": "invalid", "reason": "Each rerun follows a distinct dvc/logger.py edit (1258-1991 bytes); test_dvc_only passed at step 43."}
+{"finding_id": "reframe-hpc__reframe-3313|execution_loop|38", "verdict": "invalid", "reason": "config.json edited at step 39 before the reruns; outputs differ, verifying the applied fix."}

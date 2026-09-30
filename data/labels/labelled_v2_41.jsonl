@@ -1,0 +1,10 @@
+{"finding_id": "omni-us__jsonargparse-560|execution_loop|24", "verdict": "invalid", "reason": "Reads at distinct ranges [840,900], [980,1020], [847,880]; not redundant identical reads."}
+{"finding_id": "tobymao__sqlglot-4106|execution_loop|70", "verdict": "invalid", "reason": "git stash between 70 and 72 changed state; 78 verifies the new parser.py edits."}
+{"finding_id": "falconry__falcon-2366|execution_loop|79", "verdict": "invalid", "reason": "py_compile failed at a new line each time (408, 417, 443); edits fixed prior errors."}
+{"finding_id": "CS-SI__eodag-249|execution_loop|27", "verdict": "invalid", "reason": "reproduce_issue.py rewritten between runs (7667, 1863 byte edits); outputs differ, not identical repeats."}
+{"finding_id": "miyuchina__mistletoe-57|execution_loop|52", "verdict": "valid", "reason": "Views [146,157] at steps 54 and 60 identical; no intervening edit to html_renderer.py."}
+{"finding_id": "adamboche__python-marshmallow-union-29|execution_loop|14", "verdict": "invalid", "reason": "Fingerprint is an issue.md read and an edit; sole failure at 31 fixed by 32, passes at 33."}
+{"finding_id": "tinosulzer__PyBaMM-170|execution_loop|32", "verdict": "invalid", "reason": "debug_params.py edited (211, 501 bytes) before each run; output advanced each time."}
+{"finding_id": "pre-commit__pre-commit-hooks-483|execution_loop|30", "verdict": "invalid", "reason": "test_fix_verification.py edited (349, 342 bytes) between runs; scratch test script, not library."}
+{"finding_id": "tonioo__sievelib-86|execution_loop|38", "verdict": "invalid", "reason": "Edits differ (4467/2262/2767 bytes) and run output evolves; legitimate edit-then-test rhythm."}
+{"finding_id": "python-pillow__Pillow-6917|execution_loop|32", "verdict": "invalid", "reason": "Fingerprint is source text 'raise TypeError(msg)' shown by reads, not a live failure."}

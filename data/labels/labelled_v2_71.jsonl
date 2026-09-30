@@ -1,0 +1,10 @@
+{"finding_id": "pynamodb__PynamoDB-386|termination_anomaly|99", "verdict": "valid", "reason": "exit_status 'maximum iteration: 100, max iteration: 100' confirms step-budget cutoff after idx 99 models.py str_replace."}
+{"finding_id": "tobymao__sqlglot-8|termination_anomaly|99", "verdict": "valid", "reason": "Trajectory ends idx 99 with parser.py str_replace edit; exit_status is the 100/100 iteration cap, no submit."}
+{"finding_id": "falconry__falcon-2366|termination_anomaly|99", "verdict": "valid", "reason": "Final step idx 99 runs py_compile falcon/media/multipart.py; run ended on 100/100 cap, no submit."}
+{"finding_id": "stfc__PSyclone-2309|termination_anomaly|99", "verdict": "valid", "reason": "exit_status 'maximum iteration: 100, max iteration: 100' confirms cutoff after idx 99 fparser2.py edit."}
+{"finding_id": "MAIF__arta-37|termination_anomaly|99", "verdict": "valid", "reason": "Run ends idx 99 viewing arta/_engine.py; exit_status is the 100/100 cap, no submit action."}
+{"finding_id": "sqlfluff__sqlfluff-4239|termination_anomaly|99", "verdict": "valid", "reason": "Final step idx 99 is a C-c interrupt; trajectory hit 100/100 iteration cap without submitting."}
+{"finding_id": "OpenMined__PySyft-2560|termination_anomaly|99", "verdict": "valid", "reason": "exit_status 'maximum iteration: 100, max iteration: 100' confirms cutoff after idx 99 python demo_fix.py."}
+{"finding_id": "tobymao__sqlglot-3272|termination_anomaly|99", "verdict": "valid", "reason": "Ends idx 99 running python3 -c test; exit_status 100/100 cap, no submit action appears."}
+{"finding_id": "ReproNim__neurodocker-623|termination_anomaly|99", "verdict": "valid", "reason": "exit_status 'maximum iteration: 100, max iteration: 100' confirms budget cutoff after idx 99 neurodocker generate."}
+{"finding_id": "frictionlessdata__frictionless-py-1117|termination_anomaly|99", "verdict": "valid", "reason": "Final step idx 99 finds test files; exit_status is 100/100 cap, no submit action appears."}

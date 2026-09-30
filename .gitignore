@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+dist/
+build/
+.pytest_cache/
+
+# raw trajectory dumps are large and reproducible via `python scripts/fetch_trajectories.py`
+data/raw/
+data/cache/
+data/reports/
+
+# annotation working files (the reviewed gold set under data/labels/ IS tracked)
+data/labels/*.working.csv

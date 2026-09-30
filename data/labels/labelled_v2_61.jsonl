@@ -1,0 +1,10 @@
+{"finding_id": "jbradberry__universe-31|execution_loop|23", "verdict": "invalid", "reason": "task_tracker plan updates are bookkeeping, n_failed=0, not a repeated failing action producing same result."}
+{"finding_id": "tobymao__sqlglot-3682|termination_anomaly|99", "verdict": "valid", "reason": "exit_status 'Agent reached maximum iteration: 100, max iteration: 100' confirms step-budget cutoff."}
+{"finding_id": "pytorch__ignite-1423|termination_anomaly|30", "verdict": "invalid", "reason": "patched_files includes ignite/handlers/checkpoint.py, a real library source file."}
+{"finding_id": "pytorch__ignite-1423|termination_anomaly|99", "verdict": "valid", "reason": "exit_status 'Agent reached maximum iteration: 100, max iteration: 100' confirms step-budget cutoff."}
+{"finding_id": "mne-tools__mne-python-12080|termination_anomaly|99", "verdict": "valid", "reason": "final steps 97-99 create, run, then delete scratch file; no submit action appears."}
+{"finding_id": "PennyLaneAI__pennylane-3386|termination_anomaly|99", "verdict": "valid", "reason": "exit_status 'Agent reached maximum iteration: 100, max iteration: 100' confirms step-budget cutoff."}
+{"finding_id": "pynamodb__PynamoDB-386|termination_anomaly|99", "verdict": "valid", "reason": "trajectory ends at idx 99 with str_replace edit; no submit/finish action appears."}
+{"finding_id": "mikedh__trimesh-851|termination_anomaly|99", "verdict": "valid", "reason": "exit_status 'Agent reached maximum iteration: 100, max iteration: 100' confirms step-budget cutoff."}
+{"finding_id": "mikedh__trimesh-851|termination_anomaly|99", "verdict": "valid", "reason": "trajectory ends at idx 99 running demo_fix.py; no submit/finish action appears."}
+{"finding_id": "zarr-developers__zarr-python-2795|termination_anomaly|99", "verdict": "valid", "reason": "trajectory ends at idx 99 with read of core/group.py; no submit action appears."}

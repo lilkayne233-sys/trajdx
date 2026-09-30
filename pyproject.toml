@@ -1,0 +1,28 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "trajdx"
+version = "0.1.0"
+description = "Step-level failure diagnosis for code agents on SWE-bench trajectories"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "typer>=0.12",
+    "rich>=13.7",
+]
+
+[project.optional-dependencies]
+data = ["huggingface_hub>=0.23", "pandas>=2.0"]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+trajdx = "trajdx.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["trajdx"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

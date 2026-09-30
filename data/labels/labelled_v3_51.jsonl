@@ -1,0 +1,10 @@
+{"finding_id": "MAIF__arta-37|termination_anomaly|99", "verdict": "valid", "reason": "detail.exit_status reports maximum iteration 100/100; step 99 still mid-edit on _engine.py."}
+{"finding_id": "tobymao__sqlglot-4106|termination_anomaly|99", "verdict": "valid", "reason": "Raw exit_status is the 100/100 cap; final idx 99 runs unittest, no submit action."}
+{"finding_id": "dask__dask-6564|termination_anomaly|99", "verdict": "valid", "reason": "Raw exit_status 100/100 cap; ends idx 99 creating test_different_partitions.py, never submits."}
+{"finding_id": "mne-tools__mne-python-12080|termination_anomaly|99", "verdict": "valid", "reason": "Raw exit_status 100/100 cap; idx 99 removes final_verification.py, no submit action."}
+{"finding_id": "sqlfluff__sqlfluff-4239|termination_anomaly|99", "verdict": "valid", "reason": "detail.exit_status reports maximum iteration 100/100; idx 99 C-c after hung sqlfluff fix."}
+{"finding_id": "frictionlessdata__frictionless-py-1117|termination_anomaly|99", "verdict": "valid", "reason": "Raw exit_status 100/100 cap; last step idx 99 is a find command, no submit."}
+{"finding_id": "tobymao__sqlglot-3682|termination_anomaly|99", "verdict": "valid", "reason": "Raw exit_status 100/100 cap; ends idx 99 with str_replace edit of parser.py, no submit."}
+{"finding_id": "iossifovlab__gpf-446|termination_anomaly|99", "verdict": "valid", "reason": "detail.exit_status reports maximum iteration 100/100; idx 99 still running pytest when killed."}
+{"finding_id": "tobymao__sqlglot-3272|termination_anomaly|99", "verdict": "valid", "reason": "detail.exit_status reports maximum iteration 100/100; resolved=1 but run still killed at cap."}
+{"finding_id": "miyuchina__mistletoe-57|termination_anomaly|99", "verdict": "valid", "reason": "Raw exit_status 100/100 cap; final idx 99 is a python repro command, no submit."}

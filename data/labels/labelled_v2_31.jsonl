@@ -1,0 +1,10 @@
+{"finding_id": "alexander-akhmetov__python-telegram-77|environment_stuck|11", "verdict": "invalid", "reason": "occurrences are two views (11,12) and a git show (18), not setup or dependency commands."}
+{"finding_id": "microsoft__debugpy-54|execution_loop|10", "verdict": "invalid", "reason": "ls repeats 15,17,19 follow rm+runs at 16,18; log filenames and timestamps change each time."}
+{"finding_id": "ReproNim__neurodocker-623|execution_loop|43", "verdict": "invalid", "reason": "plan outputs differ (4, then 2, then 4 items); real renderers.py edit at 49 between repeats."}
+{"finding_id": "sqlfluff__sqlfluff-4239|execution_loop|10", "verdict": "invalid", "reason": "each C-c aborts a different sqlfluff run (flags added at 11, echo y at 13); not identical repeats."}
+{"finding_id": "optuna__optuna-3545|execution_loop|11", "verdict": "invalid", "reason": "views use different ranges [470,520], [450,490], [1,50]; distinct regions, not a redundant read."}
+{"finding_id": "psf__black-3451|execution_loop|34", "verdict": "invalid", "reason": "linegen.py edits at 37 and 41 precede reruns 38,42; repeats verify just-applied fixes."}
+{"finding_id": "SirAnthony__slpp-32|execution_loop|22", "verdict": "invalid", "reason": "malformed_test.py fixed at 23, slpp.py at 25; runs 24 and 26 exited 0, disproving '3 failed'."}
+{"finding_id": "buildout__buildout-452|execution_loop|11", "verdict": "valid", "reason": "unittest then PYTHONPATH import probes at 13,15 all hit the same unresolved zc.buildout error."}
+{"finding_id": "optuna__optuna-3545|execution_loop|53", "verdict": "valid", "reason": "plan reissued consecutively at 53,54,55 with identical '3 items' result and no state change."}
+{"finding_id": "Skyscanner__cfripper-80|execution_loop|21", "verdict": "invalid", "reason": "repro script edited at 22, real boto3_client.py patch at 28; reruns follow changes and verify fix."}

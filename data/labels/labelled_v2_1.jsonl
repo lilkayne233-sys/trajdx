@@ -1,0 +1,10 @@
+{"finding_id": "tinosulzer__PyBaMM-170|blind_search|34", "verdict": "valid", "reason": "lines 85-95 re-read identically at idx 34, 52, 96; no edit to that file between."}
+{"finding_id": "Sceptre__sceptre-1372|blind_search|7", "verdict": "invalid", "reason": "test_cmd.py edited at idx 50-51; idx 61 view returned changed content, not identical."}
+{"finding_id": "mmcdermott__MEDS_transforms-154|blind_search|14", "verdict": "invalid", "reason": "different ranges: idx 14 [340-], idx 32 [350-365], idx 49 [350-400]; edited idx 30/33."}
+{"finding_id": "Skyscanner__cfripper-80|blind_search|9", "verdict": "invalid", "reason": "ranges differ: whole file idx 9, [85-125] idx 17, [90-100] idx 51."}
+{"finding_id": "numba__numba-6083|blind_search|19", "verdict": "valid", "reason": "containers.py [434-450] read identically at idx 19, 23 and 24; nothing changed."}
+{"finding_id": "Azure__msrest-for-python-189|blind_search|15", "verdict": "invalid", "reason": "distinct ranges [650-680]/[680-700]/[705-735]; serialization.py edited at idx 36-41."}
+{"finding_id": "python-cmd2__cmd2-595|blind_search|6", "verdict": "invalid", "reason": "ranges differ: [680-720] idx 6, [650-715] idx 20, [682-710] idx 37."}
+{"finding_id": "tobymao__sqlglot-3682|blind_search|29", "verdict": "valid", "reason": "parser.py [4386-4400] viewed byte-identically at idx 29 and 56; no edit until idx 58."}
+{"finding_id": "lepture__mistune-143|blind_search|23", "verdict": "valid", "reason": "mistune.py [576-588] re-read identically at idx 32; idx 30/38/40 edits touched line 1131."}
+{"finding_id": "hhatto__autopep8-450|blind_search|10", "verdict": "invalid", "reason": "ranges differ: [1340-1400] idx 10, [1340-1390] idx 14, [1342-1352] idx 30."}
