@@ -38,8 +38,16 @@ class OpenHandsAdapter(Adapter):
         messages = payload.get("trajectory")
         if not isinstance(messages, list) or not messages:
             return 0.0
-        # OpenHands records are message lists: entries have `role`.
-        if any(isinstance(m, dict) and "role" in m for m in messages[:5]):
+        # OpenHands records are message lists, and it is tempting to accept any
+        # list whose entries carry `role`.  That is too loose: SWE-agent's
+        # published trajectory corpus uses the same `trajectory` key with a
+        # role/text stream, so it was claimed here and then parsed into nothing.
+        # The two role vocabularies are disjoint -- `assistant`/`tool` here,
+        # `ai` there -- so require OpenHands' own names instead.
+        roles = {m.get("role") for m in messages if isinstance(m, dict)}
+        if "ai" in roles:
+            return 0.0
+        if roles & {"assistant", "tool"}:
             return 1.0
         return 0.0
 

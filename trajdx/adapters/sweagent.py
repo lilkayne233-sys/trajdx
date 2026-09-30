@@ -6,19 +6,34 @@ SWE-agent already stores one object per step, so the work here is mostly
 -- it acts on whatever file the editor currently has open, which is only visible
 in the per-step ``state`` blob.
 
-Two serializations are supported
---------------------------------
+Three serializations are supported
+----------------------------------
 Running this adapter over the real logs vendored in the upstream SWE-agent
 repository surfaced a second format the first version could not read at all: the
 **function-calling** serialization, which stores a chat ``history`` (roles
 ``system``/``user``/``assistant``/``tool``) instead of a ``trajectory`` list, and
 carries structured ``tool_calls`` arguments rather than a mini-language string.
 
-Both are parsed here rather than in two adapters because they are the same agent
-and produce the same steps; only the envelope differs.  For the chat form the
-structured arguments win over the ``action`` string when both are present, since
-they do not have to be re-parsed, and the open-file pointer is tracked from the
-``open`` calls and from the ``(Open file: …)`` hint every tool result carries.
+A third one arrives with the published ``nebius/SWE-agent-trajectories`` corpus
+(80,036 real runs, with a ``target`` success label).  It also calls its message
+list ``trajectory``, but the entries are a flat role/text stream -- roles
+``system``/``user``/**``ai``** -- and the action is *embedded in prose*: the
+mini-language sits in the last fenced block of each ``ai`` turn, with the
+reasoning before it, and the next ``user`` turn carries the observation.
+
+That last point is why this is the most dangerous of the three to get wrong.
+``trajectory`` + ``role`` used to be enough for the OpenHands adapter to claim a
+record with full confidence, so these rows were silently parsed by the wrong
+adapter into **zero steps** instead of raising.  Two things now prevent it: the
+role vocabularies are disjoint (``ai`` here, ``assistant``/``tool`` there), and
+the loader refuses to pass a zero-step record off as an empty run.
+
+All three are parsed here rather than in separate adapters because they are the
+same agent and produce the same steps; only the envelope differs.  For the chat
+forms the structured arguments win over the ``action`` string when both are
+present, since they do not have to be re-parsed, and the open-file pointer is
+tracked from the ``open`` calls and from the ``(Open file: …)`` hint every tool
+result carries.
 """
 
 from __future__ import annotations
@@ -46,6 +61,15 @@ _SUBMIT = re.compile(r"^(?:submit|exit|exit_error|exit_cost|exit_api|exit_contex
 #: Tool results in the chat serialization end with `(Open file: /path/to/file)`.
 #: It is the only place the currently-open file is recorded in that format.
 _OPEN_FILE_HINT = re.compile(r"\(Open file:\s*([^)\r\n]+)\)")
+
+#: In the ``nebius/SWE-agent-trajectories`` stream the action is not a field: it
+#: is the last fenced block of the ``ai`` turn, with the reasoning before it.
+_FENCE = re.compile(r"```[^\n]*\n(.*?)```", re.DOTALL)
+
+#: Roles that identify each serialization.  SWE-agent's own message stream uses
+#: ``ai``; OpenHands uses ``assistant``/``tool``.  They never overlap, which is
+#: what makes the role vocabulary a safe discriminator between the two.
+_STREAM_ROLES = frozenset({"ai"})
 
 #: Function-calling tool name -> normalized step kind.
 _TOOL_KINDS: dict[str, StepKind] = {
@@ -80,12 +104,19 @@ class SWEAgentAdapter(Adapter):
             return 0.0
         steps = payload.get("trajectory")
         if isinstance(steps, list) and steps:
-            # SWE-agent steps carry `action`/`observation` and have no `role`.
             head = [s for s in steps[:5] if isinstance(s, dict)]
             if not head:
                 return 0.0
+            stream = cls._message_stream_roles(steps)
+            if stream is not None:
+                # `ai` present means a run that acted; its absence means the
+                # model never produced an action, which is a weaker signal but
+                # still unambiguous -- no other format uses these role names.
+                return 1.0 if stream & _STREAM_ROLES else 0.8
             if all("role" in s for s in head):
+                # Some other chat format, not one of ours.
                 return 0.0
+            # SWE-agent steps carry `action`/`observation` and have no `role`.
             if any("action" in s or "thought" in s for s in head):
                 if "environment" in payload or "info" in payload:
                     return 1.0
@@ -109,11 +140,38 @@ class SWEAgentAdapter(Adapter):
     def parse(cls, payload: Any) -> Trajectory:
         raw_steps = payload.get("trajectory")
         if isinstance(raw_steps, list) and raw_steps:
+            # The dispatch must use the same test as `sniff`.  Reading the roles
+            # only for `ai` here and accepting `system`/`user` there once sent a
+            # message stream down the `.traj` path, where each message became a
+            # fabricated THOUGHT step.
+            if cls._message_stream_roles(raw_steps) is not None:
+                return cls._parse_messages(payload, raw_steps)
             return cls._parse_traj(payload, raw_steps)
         history = payload.get("history")
         if isinstance(history, list) and history:
             return cls._parse_history(payload, history)
         return cls._parse_traj(payload, [])
+
+    @staticmethod
+    def _message_stream_roles(steps: list) -> set[Any] | None:
+        """Role set if ``steps`` is the role/text stream, else ``None``.
+
+        Shared by :meth:`sniff` and :meth:`parse` so the two can never disagree
+        about which serialization a record uses.
+        """
+        head = [s for s in steps[:5] if isinstance(s, dict)]
+        if not head or not all("role" in s for s in head):
+            return None
+        roles = {s.get("role") for s in steps if isinstance(s, dict)}
+        if roles & _STREAM_ROLES:
+            return roles
+        # A run that failed before acting has no `ai` turn; fall back to the
+        # envelope, which uses `text` where OpenHands uses `content`.
+        if roles and roles <= _STREAM_ROLES | {"system", "user"} and all(
+            "text" in s for s in head
+        ):
+            return roles
+        return None
 
     @classmethod
     def _parse_traj(cls, payload: Any, raw_steps: list) -> Trajectory:
@@ -150,20 +208,10 @@ class SWEAgentAdapter(Adapter):
             steps.append(step)
 
         info = payload.get("info") or {}
-        return Trajectory(
-            instance_id=str(
-                payload.get("instance_id")
-                or info.get("instance_id")
-                or payload.get("environment")
-                or "unknown"
-            ),
-            framework=cls.name,
-            steps=steps,
-            resolved=payload.get("resolved", info.get("resolved")),
-            repo=info.get("repo") or payload.get("repo"),
+        return cls._build_trajectory(
+            payload,
+            steps,
             problem_statement=clean_output(payload.get("problem_statement")) or None,
-            model_patch=payload.get("model_patch") or info.get("model_patch"),
-            exit_status=payload.get("exit_status") or info.get("exit_status"),
             meta={
                 "environment": payload.get("environment"),
                 "n_raw_steps": len(raw_steps),
@@ -267,6 +315,117 @@ class SWEAgentAdapter(Adapter):
                 continue
 
         info = payload.get("info") or {}
+        return cls._build_trajectory(
+            payload,
+            steps,
+            problem_statement=problem,
+            meta={
+                "environment": payload.get("environment"),
+                "n_raw_steps": len(payload.get("history") or []),
+                "model_name": info.get("model_name"),
+                "serialization": "history",
+                "system_prompt": system_prompt,
+            },
+        )
+
+    # ------------------------------------------------- role/text message stream
+    @classmethod
+    def _parse_messages(cls, payload: Any, messages: list) -> Trajectory:
+        """Parse the ``nebius/SWE-agent-trajectories`` role/text stream.
+
+        One ``ai`` turn is one step, and the ``user`` turn after it is that
+        step's observation.  The action is not a field but the last fenced block
+        of the ``ai`` text, so the block is lifted out here and handed to the
+        same mini-language parser the ``.traj`` format uses -- ``open``, ``edit
+        N:M``, ``create``, ``search_dir`` and the rest all mean the same thing.
+        """
+        steps: list[AgentStep] = []
+        open_file = ""
+        system_prompt: str | None = None
+        problem: str | None = None
+        awaiting: int | None = None
+
+        for message in messages:
+            if not isinstance(message, dict):
+                continue
+            role = message.get("role")
+            text = message.get("text")
+
+            if role == "system":
+                system_prompt = clean_output(text) or system_prompt
+                continue
+
+            if role == "user":
+                # The opening user turn is the issue statement; every later one
+                # is the environment's reply to the step just taken.
+                if problem is None:
+                    problem = clean_output(text)
+                    continue
+                observation = clean_output(text)
+                if awaiting is not None and awaiting < len(steps):
+                    step = steps[awaiting]
+                    step.observation = observation
+                    if step.kind in ERROR_BEARING_KINDS:
+                        step.error_kind, step.error_fp = classify_error(observation)
+                        step.exit_code = extract_exit_code(observation)
+                awaiting = None
+                hint = _OPEN_FILE_HINT.search(observation or "")
+                if hint:
+                    path = repo_relative(hint.group(1))
+                    if path and path.lower() != "n/a":
+                        open_file = path
+                continue
+
+            if role != "ai":
+                continue
+
+            thought, action = _split_action(text)
+            step = cls._build_step(
+                idx=len(steps),
+                action=action,
+                thought=thought,
+                response=None,
+                open_file=open_file,
+                state={},
+            )
+            open_file = cls._track_open_file(step, open_file)
+            steps.append(step)
+            awaiting = step.idx
+
+        return cls._build_trajectory(
+            payload,
+            steps,
+            problem_statement=problem,
+            meta={
+                "n_raw_steps": len(messages),
+                "model_name": payload.get("model_name"),
+                "serialization": "messages",
+                "system_prompt": system_prompt,
+            },
+        )
+
+    # ------------------------------------------------------------- assembling
+    @classmethod
+    def _build_trajectory(
+        cls,
+        payload: Any,
+        steps: list[AgentStep],
+        *,
+        problem_statement: str | None,
+        meta: dict[str, Any],
+    ) -> Trajectory:
+        """Assemble a :class:`Trajectory` from fields the three formats share.
+
+        They disagree about where the outcome and the final patch live -- the
+        message stream calls them ``target`` and ``generated_patch`` -- so the
+        lookups are collected here instead of being repeated per format.
+        """
+        info = payload.get("info") or {}
+        resolved = payload.get("resolved")
+        if resolved is None:
+            resolved = info.get("resolved")
+        if resolved is None:
+            resolved = payload.get("target")
         return Trajectory(
             instance_id=str(
                 payload.get("instance_id")
@@ -276,18 +435,14 @@ class SWEAgentAdapter(Adapter):
             ),
             framework=cls.name,
             steps=steps,
-            resolved=payload.get("resolved", info.get("resolved")),
+            resolved=resolved,
             repo=info.get("repo") or payload.get("repo"),
-            problem_statement=problem,
-            model_patch=payload.get("model_patch") or info.get("model_patch"),
+            problem_statement=problem_statement,
+            model_patch=payload.get("model_patch")
+            or info.get("model_patch")
+            or payload.get("generated_patch"),
             exit_status=payload.get("exit_status") or info.get("exit_status"),
-            meta={
-                "environment": payload.get("environment"),
-                "n_raw_steps": len(payload.get("history") or []),
-                "model_name": info.get("model_name"),
-                "serialization": "history",
-                "system_prompt": system_prompt,
-            },
+            meta=meta,
         )
 
     @staticmethod
@@ -496,3 +651,22 @@ def _body(action: str, first_line: str) -> str:
     if "end_of_edit" in rest:
         rest = rest.split("end_of_edit", 1)[0]
     return rest.strip("\n")
+
+
+def _split_action(text: Any) -> tuple[str | None, str]:
+    """Split an ``ai`` turn into its reasoning and its action.
+
+    SWE-agent puts the command in the last fenced block of the turn, so the
+    *last* block is the action and everything before it is the thought.  A turn
+    with no block is pure reasoning and yields an empty action, which the
+    mini-language parser turns into a ``THOUGHT`` step.
+    """
+    raw = text if isinstance(text, str) else ""
+    blocks = list(_FENCE.finditer(raw))
+    if not blocks:
+        return clean_output(raw) or None, ""
+    last = blocks[-1]
+    # The blank line that separates the reasoning from the fence is not part of
+    # the reasoning, so strip it rather than carrying it into every thought.
+    thought = (clean_output(raw[: last.start()]) or "").strip() or None
+    return thought, last.group(1).strip()

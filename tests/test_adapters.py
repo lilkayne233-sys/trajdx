@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
-from trajdx.adapters import ADAPTERS, detect_adapter
+from trajdx.adapters import ADAPTERS, detect_adapter, load_file
 from trajdx.adapters.openhands import OpenHandsAdapter
 from trajdx.adapters.sweagent import SWEAgentAdapter
 from trajdx.schema import StepKind
@@ -352,6 +353,148 @@ def test_generic_chat_history_is_not_claimed_by_sweagent():
 
 
 # --------------------------------------------------------------------------
+# Third serialization: the published SWE-agent corpus
+# --------------------------------------------------------------------------
+#
+# `nebius/SWE-agent-trajectories` stores 80,036 real runs under the same
+# `trajectory` key OpenHands uses, but as a role/text stream (`ai`, not
+# `assistant`) with the action embedded in the last fenced block of each turn.
+# Every row of that corpus used to be claimed by the OpenHands adapter and
+# parsed into zero steps without an error, so these tests exist mainly to keep
+# the two formats from being confused again.
+
+SWE_AGENT_STREAM = {
+    "instance_id": "AnalogJ__lexicon-336",
+    "model_name": "swe-agent-llama-70b",
+    "target": False,
+    "exit_status": "submitted",
+    "generated_patch": "diff --git a/lexicon/providers/memset.py b/lexicon/providers/memset.py",
+    "trajectory": [
+        {
+            "role": "system",
+            "cutoff_date": "01.01.2023",
+            "mask": False,
+            "system_prompt": "SETTING: You are an autonomous programmer",
+            "text": "",
+        },
+        {
+            "role": "user",
+            "text": "We're currently solving the following issue.\nISSUE:\nMemset provider TypeError",
+        },
+        {"role": "ai", "text": "Let's reproduce it.\n\n```\nls -F\n```"},
+        {
+            "role": "user",
+            "text": "CODEOWNERS\nlexicon/\n\n(Open file: n/a)\n(Current directory: /lexicon)\nbash-$",
+        },
+        {
+            "role": "ai",
+            "text": "Open the provider.\n\n```\nopen lexicon/providers/memset.py\n```",
+        },
+        {
+            "role": "user",
+            "text": "[File: memset.py]\n\n(Open file: /lexicon/lexicon/providers/memset.py)",
+        },
+        {
+            "role": "ai",
+            "text": (
+                "Fix the auth.\n\n```\nedit 20:24\n"
+                "    def __init__(self):\n        pass\nend_of_edit\n```"
+            ),
+        },
+        {
+            "role": "user",
+            "text": "Text replaced.\n\n(Open file: /lexicon/lexicon/providers/memset.py)",
+        },
+        {
+            "role": "ai",
+            "text": "Run the tests.\n\n```\npytest tests/test_memset.py\n```",
+        },
+        {
+            "role": "user",
+            "text": "1 passed\n\n(Open file: /lexicon/lexicon/providers/memset.py)",
+        },
+        {"role": "ai", "text": "Done.\n\n```\nsubmit\n```"},
+    ],
+}
+
+
+def test_sweagent_reads_the_published_message_stream():
+    trajectory = SWEAgentAdapter.parse(SWE_AGENT_STREAM)
+    assert [s.kind for s in trajectory.steps] == [
+        StepKind.SHELL,
+        StepKind.READ,
+        StepKind.EDIT,
+        StepKind.SHELL,
+        StepKind.SUBMIT,
+    ]
+    assert trajectory.meta["serialization"] == "messages"
+
+
+def test_message_stream_takes_the_action_from_the_last_fenced_block():
+    trajectory = SWEAgentAdapter.parse(SWE_AGENT_STREAM)
+    first = trajectory.steps[0]
+    assert first.args["command"] == "ls -F"
+    assert first.thought == "Let's reproduce it."
+
+
+def test_message_stream_pairs_each_result_with_the_step_that_caused_it():
+    trajectory = SWEAgentAdapter.parse(SWE_AGENT_STREAM)
+    assert trajectory.steps[0].observation.startswith("CODEOWNERS")
+    # the trailing `(Open file: …)` hint is part of the observation, as it is in
+    # the `.traj` format -- the parser reads it, it does not strip it
+    assert trajectory.steps[3].observation.startswith("1 passed")
+
+
+def test_message_stream_edit_targets_the_open_file():
+    """`edit` names no path; the file comes from the previous turn's hint."""
+    trajectory = SWEAgentAdapter.parse(SWE_AGENT_STREAM)
+    edit = trajectory.steps[2]
+    assert edit.args["path"] == "lexicon/lexicon/providers/memset.py"
+    assert edit.args["verb"] == "str_replace"
+
+
+def test_message_stream_reads_the_outcome_and_patch_fields():
+    trajectory = SWEAgentAdapter.parse(SWE_AGENT_STREAM)
+    assert trajectory.resolved is False
+    assert trajectory.model_patch.startswith("diff --git")
+    assert trajectory.meta["model_name"] == "swe-agent-llama-70b"
+
+
+def test_message_stream_problem_statement_is_the_opening_user_turn():
+    trajectory = SWEAgentAdapter.parse(SWE_AGENT_STREAM)
+    assert trajectory.problem_statement.startswith("We're currently solving")
+
+
+def test_message_stream_without_an_ai_turn_has_no_steps():
+    """A run that failed before acting is empty -- and must not be faked."""
+    silent = {
+        "instance_id": "x",
+        "target": False,
+        "trajectory": [
+            {"role": "system", "text": ""},
+            {"role": "user", "text": "ISSUE: something"},
+        ],
+    }
+    assert SWEAgentAdapter.sniff(silent) > 0.5  # still recognised as this format
+    assert SWEAgentAdapter.parse(silent).steps == []
+
+
+def test_sniff_separates_the_message_stream_from_openhands():
+    assert SWEAgentAdapter.sniff(SWE_AGENT_STREAM) == 1.0
+    assert OpenHandsAdapter.sniff(SWE_AGENT_STREAM) == 0.0
+    assert detect_adapter(SWE_AGENT_STREAM) is SWEAgentAdapter
+    # and the reverse: an OpenHands record is not claimed here
+    assert SWEAgentAdapter.sniff(OPENHANDS_RECORD) == 0.0
+
+
+def test_role_vocabulary_alone_tells_the_two_streams_apart():
+    """`ai` vs `assistant` is the discriminator, so pin both directions."""
+    assert "ai" in {m["role"] for m in SWE_AGENT_STREAM["trajectory"]}
+    assert "assistant" in {m["role"] for m in OPENHANDS_RECORD["trajectory"]}
+    assert OpenHandsAdapter.sniff(OPENHANDS_RECORD) == 1.0
+
+
+# --------------------------------------------------------------------------
 # Adapter selection
 # --------------------------------------------------------------------------
 
@@ -390,3 +533,125 @@ def test_openhands_and_sweagent_agree_on_the_shared_vocabulary():
             assert isinstance(step.action_key, str) and step.action_key
             assert isinstance(step.exact_key, str) and step.exact_key
             assert isinstance(step.observation_key, str) and step.observation_key
+
+
+# --------------------------------------------------------------------------
+# The loader itself
+# --------------------------------------------------------------------------
+
+
+def _dump(tmp_path, *records, name="traj.jsonl"):
+    path = tmp_path / name
+    path.write_text(
+        "".join(json.dumps(r) + "\n" for r in records),
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_a_zero_step_record_is_never_returned_as_an_empty_run(tmp_path):
+    """The failure that started this: silence instead of an error.
+
+    A whole corpus of SWE-agent rows came back as thousands of zero-step
+    trajectories because the wrong adapter had claimed them.  Zero steps means
+    "not understood", so the loader must say so rather than hand it back.
+    """
+    path = _dump(
+        tmp_path,
+        {
+            "instance_id": "silent",
+            "trajectory": [
+                {"role": "system", "text": ""},
+                {"role": "user", "text": "ISSUE: nothing happens"},
+            ],
+        },
+    )
+    with pytest.warns(RuntimeWarning, match="zero steps"):
+        assert load_file(path) == []
+
+
+def test_on_empty_error_refuses_the_file(tmp_path):
+    path = _dump(
+        tmp_path,
+        {"instance_id": "ok", "trajectory": [{"action": "submit", "observation": ""}]},
+        {
+            "instance_id": "silent",
+            "trajectory": [
+                {"role": "system", "text": ""},
+                {"role": "user", "text": "ISSUE: nothing happens"},
+            ],
+        },
+    )
+    with pytest.raises(ValueError, match="zero steps"):
+        load_file(path, on_empty="error")
+
+
+def test_on_empty_rejects_an_unknown_mode(tmp_path):
+    path = _dump(tmp_path, {"instance_id": "ok", "trajectory": []})
+    with pytest.raises(ValueError, match="on_empty"):
+        load_file(path, on_empty="sometimes")
+
+
+def test_a_good_record_is_still_returned_verbatim(tmp_path):
+    path = _dump(
+        tmp_path,
+        {
+            "instance_id": "acme__widget-1",
+            "trajectory": [{"action": "submit", "observation": ""}],
+        },
+    )
+    trajectories = load_file(path)
+    assert [t.instance_id for t in trajectories] == ["acme__widget-1"]
+
+
+def test_jsonl_is_streamed_rather_than_slurped(tmp_path, monkeypatch):
+    """A `.jsonl` dump must never be read into one string first.
+
+    The published corpora are gigabytes; slurping one turns a load that should
+    work into a MemoryError, and it did so at 4,096 OpenHands trajectories.
+    """
+    path = _dump(
+        tmp_path,
+        {
+            "instance_id": "acme__widget-1",
+            "trajectory": [{"action": "submit", "observation": ""}],
+        },
+    )
+
+    def refuse(*args, **kwargs):  # pragma: no cover - only runs on regression
+        raise AssertionError("a .jsonl file was read whole; stream it line by line")
+
+    monkeypatch.setattr(Path, "read_text", refuse)
+    assert len(load_file(path)) == 1
+
+
+def test_jsonl_line_numbers_are_reported_for_bad_json(tmp_path):
+    path = tmp_path / "broken.jsonl"
+    path.write_text(
+        json.dumps(
+            {
+                "instance_id": "acme__widget-1",
+                "trajectory": [{"action": "submit", "observation": ""}],
+            }
+        )
+        + "\n{oops\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match=":2: invalid JSON line"):
+        load_file(path)
+
+
+def test_a_bom_on_the_first_line_is_tolerated(tmp_path):
+    """Annotation tooling writes BOMs; the loader must not trip on line 1."""
+    path = tmp_path / "bom.jsonl"
+    path.write_bytes(
+        b"\xef\xbb\xbf"
+        + json.dumps(
+            {
+                "instance_id": "acme__widget-1",
+                "trajectory": [{"action": "submit", "observation": ""}],
+            }
+        ).encode()
+        + b"\n"
+    )
+    assert [t.instance_id for t in load_file(path)] == ["acme__widget-1"]

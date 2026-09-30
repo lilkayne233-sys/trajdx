@@ -15,7 +15,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-data = ["huggingface_hub>=0.23", "pandas>=2.0"]
+# pyarrow is what actually reads the published parquet corpora; the fetch
+# scripts import it directly, so it belongs here rather than being assumed.
+data = ["huggingface_hub>=0.23", "pandas>=2.0", "pyarrow>=14.0"]
 dev = ["pytest>=8.0"]
 
 [project.scripts]
