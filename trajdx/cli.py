@@ -79,15 +79,31 @@ def _diagnose(
 
 
 def _compact(text: str | None, limit: int) -> str:
-    """Collapse whitespace before truncating.
+    """Collapse whitespace, then shorten to ``limit`` keeping both ends.
 
     Observation bodies are mostly newlines and indentation; leaving them in makes
     JSON escaping triple the size of the annotation file for no added meaning.
+
+    The shortening keeps the **head and the tail**, not just the head.  Both ends
+    carry the evidence and they are different evidence: the input and the command
+    echo sit at the top, the traceback, the failing assertion and the exit status
+    sit at the bottom.  Cutting after ``limit`` characters threw away exactly the
+    part an annotator needs -- several pilot findings had observations whose first
+    800 characters were nothing but the pytest session banner, with the error text
+    below the cut, which left the verdict resting on a fingerprint the annotator
+    could not see.
     """
     cleaned = clean_output(text)
     cleaned = re.sub(r"[ \t]+", " ", cleaned)
     cleaned = re.sub(r"\n\s*\n+", "\n", cleaned)
-    return cleaned.strip()[:limit]
+    cleaned = cleaned.strip()
+    if len(cleaned) <= limit or limit <= 0:
+        return cleaned
+
+    head = limit * 2 // 3
+    tail = limit - head
+    elided = len(cleaned) - limit
+    return f"{cleaned[:head]}\n… [{elided} chars elided] …\n{cleaned[-tail:]}"
 
 
 def _load(

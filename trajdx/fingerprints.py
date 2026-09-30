@@ -187,14 +187,31 @@ def _extract_signature(kind: str, text: str) -> str:
     return _normalize_signature(kind)
 
 
-def classify_error(observation: str | None) -> tuple[str | None, str | None]:
+def classify_error(observation: str | None, *, exit_code: int | None = None) -> tuple[str | None, str | None]:
     """Map raw output to ``(error_kind, error_fingerprint)``.
 
     Returns ``(None, None)`` when the output carries no error signal, which is
     the common case for successful commands.
+
+    **A command that reported success is never an error.**  The rule table below
+    matches text, and text lies: a successful ``grep`` that prints a line of the
+    form ``raise AttributeError(``, a docstring phrase like ``ValueError if
+    asked.``, or a minified bundle containing the word ``error`` all look like
+    failures to a regex while the command exited 0.  On 60 OpenHands trajectories
+    that accounted for 120 steps marked as errors that had in fact succeeded, and
+    those bogus fingerprints then drove the loop and environment detectors.  So
+    the exit status is checked first and wins outright.
+
+    ``exit_code`` may be passed in when the caller already extracted it;
+    otherwise it is read from the observation.
     """
     text = clean_output(observation)
     if not text or not text.strip():
+        return None, None
+
+    if exit_code is None:
+        exit_code = extract_exit_code(text)
+    if exit_code == 0:
         return None, None
 
     if len(text) > 2 * _MAX_ANALYZE:

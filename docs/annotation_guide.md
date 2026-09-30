@@ -60,6 +60,11 @@ argue for it, it is `invalid`.
   nothing.
 - `invalid` — the file had been edited between views, so the second look was
   justified, or the views are of *different* regions of a large file.
+- `invalid` also when the file was **reverted** between views (`git checkout`,
+  `git reset`, `git stash`). The content comes back byte-identical precisely
+  *because* the agent discarded its own experiment, and looking again is the only
+  way to learn what the file says now. The detector excludes these; flag one if
+  you see it.
 
 ### `blind_search` — pattern `read_without_edit`
 *Claim: exploration ran far past a reasonable budget without producing an edit.*
@@ -68,6 +73,13 @@ argue for it, it is `invalid`.
   for the same thing, no narrowing of the search space.
 - `invalid` — the inspection is systematic and convergent (reading a module, its
   tests, then its callers before making a targeted change).
+- `invalid` also for **orientation**: the opening steps of a run, and reads of
+  documentation or project configuration (`README`, `CHANGELOG`,
+  `pyproject.toml`, `requirements.txt`, `environment.yml`, `pytest.ini` and the
+  like). An agent finding its feet in an unfamiliar repository has not started
+  looking for the defect, so it cannot be failing to find it. Note the detector
+  already excludes these; flag it if you see one, because that means the filter
+  missed a shape.
 
 ### `verification_gap` — pattern `never_verified`
 *Claim: the agent edited code and submitted without ever running the tests.*
@@ -88,16 +100,53 @@ argue for it, it is `invalid`.
 ### `verification_gap` — pattern `low_test_intensity`
 *Claim: many edits were made against very few test executions.*
 
+Shared with `weak_verification`, which fires on the same pattern; the criteria
+below apply to both.
+
 - `valid` — the edit-to-test ratio really is lopsided and the edits are
   substantive.
 - `invalid` — the "edits" are a single logical change applied in several tool
   calls (e.g. creating a file then appending to it), which inflates the count.
+
+### `weak_verification` — pattern `low_test_intensity`
+*Claim: library source was edited heavily while almost nothing was run to check
+it — at least 3 source edits against fewer than 0.75 test executions per edit,
+where a "test execution" is a recognised suite invocation or an ad-hoc probe the
+agent wrote and ran.*
+
+- `valid` — the edit count reflects distinct, substantive changes to library
+  source, and the run's verification really was thin: no test-suite invocation
+  across the span, only ad-hoc probes, or none at all.
+- `invalid` — the edit count is inflated. The recurring shapes, all observed in
+  the pilot round:
+  - one logical change split across several tool calls;
+  - the same function or line rewritten repeatedly;
+  - a revert-and-re-apply cycle;
+  - failed or no-op edit attempts (`No replacement performed`) counted as edits;
+  - a file created and then appended to;
+  - documentation, `.rst`/`.sql` fixtures, requirements files and throwaway
+    scripts counted as source.
+- `invalid` also when tests plainly ran in a form the detector does not
+  recognise (`python -m tornado.test.runtests`, `python -m unittest`,
+  `python -m pytest` behind a wrapper, a custom check script), or when the ratio
+  is only marginally under the threshold and the run demonstrably re-tested after
+  each change.
+
+Two things to keep in mind. Unlike `verification_gap`/`never_verified`, which is
+satisfied by the *absence* of tests, this pattern is a **rate**: the label turns
+on the composition of the numerator (the edits) as much as the denominator (the
+tests), so read the edits before accepting the ratio. And `resolved` is
+irrelevant here as everywhere else.
 
 ### `termination_anomaly` — pattern `iteration_cap` / `no_submit`
 *Claim: the run was cut off by the step budget, or ended without submitting.*
 
 - `valid` — the trajectory ends abruptly at the cap, or contains no submission.
 - `invalid` — the run submitted normally and the detector misread the status.
+
+A run cut off by the cap is never *also* reported as `no_submit`: it cannot have
+submitted, so the two are one anomaly. Neither pattern charges wasted steps --
+failing to click submit does not undo the work.
 
 ### `termination_anomaly` — pattern `patch_ignores_source`
 *Claim: the final patch touches only tests or throwaway scripts.*

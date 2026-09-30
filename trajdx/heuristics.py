@@ -58,6 +58,8 @@ _TEST_COMMAND = re.compile(
     | (?:^|[\s;&|(]) cargo \s+ test (?:\s|$)
     | (?:^|[\s;&|(]) go \s+ test (?:\s|$)
     | (?:^|[\s;&|(]) python[0-9.]* \s+ -m \s+ (?:pytest|unittest)
+    | (?:^|[\s;&|(]) python[0-9.]* \s+ -m \s+ \S*run_?tests (?:\s|$)
+    | (?:^|[\s;&|(]) python[0-9.]* \s+ -c (?:\s|$)
     | (?:^|[\s;&|(]) (?:\S*/)?(?:test_\w+|\w+_test)\.py (?:\s|$)
     """
 )
@@ -70,8 +72,59 @@ _INSPECT_WORDS = frozenset(
     {
         "cat", "grep", "rg", "ls", "find", "head", "tail", "less", "more",
         "view", "echo", "which", "type", "wc", "sed", "awk", "stat", "file",
+        # Navigation and no-ops: ``cd /repo && pytest`` is a test run, and the
+        # `cd` half must not be read as the command under test.  `test` and `[`
+        # are shell builtins, not the test suite.
+        "cd", "true", "false", "test", "[",
     }
 )
+
+
+def split_segments(command: str) -> list[str]:
+    """Split a shell command on ``&&``/``||``/``;``/``|``, respecting quotes.
+
+    A naive regex split is wrong here and was actively harmful.  Agents grep for
+    alternations, and the escaped pipe in ``grep -n "A\\|B" tests/test_x.py``
+    looked like a separator: the command was cut mid-pattern and the tail read as
+    a bare ``test_x.py`` invocation, so *searching* a test file was credited as
+    *running* it.  Quoting and backslash escapes are honoured, so a separator
+    only counts where the shell would see one.
+    """
+    segments: list[str] = []
+    current: list[str] = []
+    quote: str | None = None
+    index = 0
+    length = len(command)
+
+    while index < length:
+        char = command[index]
+        if quote is None and char == "\\" and index + 1 < length:
+            current.append(char)
+            current.append(command[index + 1])
+            index += 2
+            continue
+        if quote is not None:
+            current.append(char)
+            if char == quote:
+                quote = None
+            index += 1
+            continue
+        if char in "'\"":
+            quote = char
+            current.append(char)
+            index += 1
+            continue
+        if char in ";|&":
+            # `&&` and `||` are one separator; a lone `|` is a pipe.
+            index += 2 if index + 1 < length and command[index + 1] == char else 1
+            segments.append("".join(current))
+            current = []
+            continue
+        current.append(char)
+        index += 1
+
+    segments.append("".join(current))
+    return segments
 
 
 def is_test_command(command: str | None) -> bool:
@@ -89,7 +142,7 @@ def is_test_command(command: str | None) -> bool:
     if _NOT_A_TEST_RUN.search(cmd):
         return False
 
-    for segment in re.split(r"&&|\|\||;|\|", cmd):
+    for segment in split_segments(cmd):
         segment = segment.strip()
         if not segment:
             continue
@@ -118,18 +171,45 @@ _INSTALL_CMD = re.compile(
 
 _SETUP_CMD = re.compile(
     r"""(?x)
-      (?:^|[\s;&|(]) git \s+ (?:clone|checkout|apply|reset|stash|fetch|pull)
+      (?:^|[\s;&|(]) git \s+ (?:clone|apply|reset|stash|fetch|pull)
     | (?:^|[\s;&|(]) (?:source|\.) \s+ \S*(?:activate|env)\S*
-    | (?:^|[\s;&|(]) export \s+ \w+=
     | (?:^|[\s;&|(]) (?:conda|mamba) \s+ (?:create|activate|env|install)
     | (?:^|[\s;&|(]) (?:apt|apt-get|yum|apk|brew) \s+ (?:install|update|upgrade)
     """
 )
-# NOTE: `cd`, `mkdir` and `touch` are deliberately excluded.  Almost every
-# command in these logs is prefixed with `cd /workspace/<repo> &&`, so treating
-# `cd` as environment work marks the entire trajectory as a setup struggle --
-# an early version of this rule fired on 95% of runs, including 97% of the ones
-# that succeeded.
+# NOTE: `export`, `cd`, `mkdir` and `touch` are deliberately excluded.
+#
+# `cd`: almost every command in these logs is prefixed with
+# `cd /workspace/<repo> &&`, so treating it as environment work marks the entire
+# trajectory as a setup struggle -- an early version of this rule fired on 95% of
+# runs, including 97% of the ones that succeeded.
+#
+# `export`: any prefix assignment qualified, so `export PYTHONPATH=. && python
+# reproduce_issue.py` was classified as a dependency operation.  That is the
+# agent's own scratch script being re-run while it iterates on a reproduction,
+# which is ordinary debugging; the env-stuck detector then saw a "setup command"
+# failing repeatedly when nothing about the environment was being touched.
+#
+# `git checkout` is also dropped from this list for the same reason: agents use
+# it to discard their own experiments constantly, and it is not a repository or
+# interpreter setup step.
+_SETUP_CMD_REVERT = re.compile(
+    r"""(?x)
+      (?:^|[\s;&|(]) git \s+ (?:checkout|restore) (?:\s|$)
+    | (?:^|[\s;&|(]) git \s+ (?:reset|stash) (?:\s|$)
+    """
+)
+
+
+def is_revert_command(command: str | None) -> bool:
+    """True for commands that roll the working tree back to an earlier state.
+
+    Used to justify re-reading a file: after a revert the file's content is not
+    what the last look saw, so a second look is not a redundant read.
+    """
+    if not command:
+        return False
+    return bool(_SETUP_CMD_REVERT.search(command))
 
 
 def is_install_command(command: str | None) -> bool:
@@ -177,3 +257,28 @@ def is_test_or_scratch(path: str | None) -> bool:
         return False
     p = repo_relative(path)
     return bool(_TEST_FILE.search(p) or _SCRATCH_FILE.search(p))
+
+
+#: Documentation and project configuration.  Reading these is orientation, not
+#: investigation of the defect.
+_DOC_CONFIG_FILE = re.compile(
+    r"(^|/)(readme|contributing|changelog|changes|license|authors|notice|"
+    r"code_of_conduct|makefile|dockerfile)[^/]*$"
+    r"|(^|/)requirements[^/]*\.txt$"
+    r"|(^|/)(setup|conftest)\.(py|cfg)$"
+    r"|\.(md|rst|txt|toml|ini|cfg|yml|yaml|lock)$",
+    re.IGNORECASE,
+)
+
+
+def is_doc_or_config(path: str | None) -> bool:
+    """True for READMEs, changelogs and project configuration files.
+
+    An agent that opens ``README.md``, ``pyproject.toml`` and ``requirements.txt``
+    in its first few steps is orienting itself in an unfamiliar repository.  That
+    is not blind search, and counting it as investigation of the bug is what made
+    the detector flag its opening moves.
+    """
+    if not path:
+        return False
+    return bool(_DOC_CONFIG_FILE.search(repo_relative(path)))

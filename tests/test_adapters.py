@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from trajdx.adapters import ADAPTERS, detect_adapter, load_file
+from trajdx.cli import _compact
 from trajdx.adapters.openhands import OpenHandsAdapter
 from trajdx.adapters.sweagent import SWEAgentAdapter
 from trajdx.schema import StepKind
@@ -655,3 +656,36 @@ def test_a_bom_on_the_first_line_is_tolerated(tmp_path):
         + b"\n"
     )
     assert [t.instance_id for t in load_file(path)] == ["acme__widget-1"]
+
+
+# --------------------------------------------------------------------------
+# Observation truncation
+# --------------------------------------------------------------------------
+
+
+def test_truncation_keeps_the_head_and_the_tail():
+    """Both ends carry evidence, and they are different evidence.
+
+    Cutting after N characters threw away the traceback and the exit status --
+    several pilot findings had observations whose first 800 characters were
+    nothing but the pytest session banner, with the error below the cut.
+    """
+    head_marker = "COMMAND: pytest tests/"
+    tail_marker = "EXIT STATUS: 1"
+    body = "filler line\n" * 400
+    compact = _compact(f"{head_marker}\n{body}{tail_marker}", 300)
+
+    assert head_marker in compact
+    assert tail_marker in compact
+    assert "chars elided" in compact
+    assert len(compact) < len(body)
+
+
+def test_short_observations_are_left_alone():
+    assert _compact("short output", 800) == "short output"
+
+
+def test_truncation_still_collapses_whitespace():
+    # Runs of spaces collapse to one, and blank lines collapse away.  (A single
+    # leading space survives the collapse, as it always has.)
+    assert _compact("a\n\n\n\n   b   c", 800) == "a\n b c"

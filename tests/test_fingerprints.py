@@ -76,3 +76,45 @@ def test_long_observations_are_truncated_head_and_tail():
     kind, fingerprint = classify_error(huge)
     assert kind == "import_error"
     assert "tail_marker" in fingerprint
+
+
+# --------------------------------------------------------------------------
+# A command that reported success is never an error
+# --------------------------------------------------------------------------
+#
+# This was the largest single source of false positives the pilot annotation
+# found: 120 steps across 60 trajectories were marked as failures while the
+# command had in fact exited 0.  The rule table matches text, and text lies -- a
+# grep printing a source line containing `raise AttributeError(`, a docstring
+# saying `ValueError if asked.`, or a minified bundle holding the word `error`
+# all look like failures to a regex.
+
+
+@pytest.mark.parametrize(
+    "observation",
+    [
+        'src/a.py:12:    raise AttributeError("no field")\nexit code 0',
+        "ValueError if asked.\n[The command completed with exit code 0.]",
+        "Traceback (most recent call last):\n  ...\nTimeoutError\nexit code: 0",
+        "app.js:1:...error...\nexit code 0",
+        "FAILED tests/test_x.py::test_y\n1 failed, 1 passed\nexit code 0",
+    ],
+)
+def test_a_zero_exit_code_suppresses_every_error_kind(observation):
+    assert classify_error(observation) == (None, None)
+
+
+def test_the_same_text_is_still_an_error_when_the_command_failed():
+    kind, fingerprint = classify_error("ValueError if asked.\nexit code 1")
+    assert kind == "value_error" and fingerprint
+
+
+def test_an_unknown_exit_code_falls_back_to_text():
+    """No status captured: keep the old behaviour rather than going blind."""
+    kind, _ = classify_error("Traceback (most recent call last):\nValueError: bad")
+    assert kind == "value_error"
+
+
+def test_the_caller_may_supply_the_exit_code():
+    assert classify_error("ValueError: bad", exit_code=0) == (None, None)
+    assert classify_error("ValueError: bad", exit_code=1)[0] == "value_error"

@@ -36,9 +36,10 @@ class TerminationAnomalyDetector(Detector):
     def detect(self, trajectory: Trajectory) -> list[Finding]:
         findings: list[Finding] = []
         findings.extend(self._empty_patch(trajectory))
-        findings.extend(self._iteration_cap(trajectory))
+        capped = self._iteration_cap(trajectory)
+        findings.extend(capped)
         findings.extend(self._patch_ignores_source(trajectory))
-        findings.extend(self._no_submit(trajectory))
+        findings.extend(self._no_submit(trajectory, capped=bool(capped)))
         return findings
 
     # ----------------------------------------------------------------- empty
@@ -116,8 +117,19 @@ class TerminationAnomalyDetector(Detector):
         ]
 
     # ------------------------------------------------------------- no submit
-    def _no_submit(self, trajectory: Trajectory) -> list[Finding]:
+    def _no_submit(self, trajectory: Trajectory, *, capped: bool = False) -> list[Finding]:
+        """The run ended without submitting its work.
+
+        Suppressed when :meth:`_iteration_cap` already fired.  A run cut off by
+        the step budget by definition never submitted, so reporting both is one
+        anomaly counted twice: on 300 OpenHands runs, 37 of the 39 trajectories
+        carrying either pattern carried *both*, and not one carried `no_submit`
+        alone.  As a separate finding it added no signal there, only a second
+        entry in the precision table.
+        """
         if trajectory.n_steps == 0:
+            return []
+        if capped:
             return []
         if any(s.kind is StepKind.SUBMIT for s in trajectory.steps):
             return []

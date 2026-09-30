@@ -16,3 +16,6 @@ data/gold/
 
 # annotation working files (the reviewed gold set under data/labels/ IS tracked)
 data/labels/*.working.csv
+
+# editor settings (local to each machine)
+.vscode/

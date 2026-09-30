@@ -188,8 +188,9 @@ positive class, so a value below 0.5 means "lower is worse" and inverts to above
 |---|---|---|---|---|
 | `total_steps` | 0.694 | — | 58.83 | 71.41 |
 | `source_edits` | 0.632 | — | 2.97 | 4.42 |
-| `tests_per_source_edit` | 0.385 | **0.615** | 6.67 | 5.14 |
-| `test_run_ratio` | 0.399 | **0.601** | 0.1975 | 0.1726 |
+| `test_runs` | 0.538 | — | 14.09 | 14.86 |
+| `tests_per_source_edit` | 0.386 | **0.614** | 8.16 | 6.24 |
+| `test_run_ratio` | 0.402 | **0.598** | 0.2451 | 0.2192 |
 | `wasted_step_ratio` | 0.520 | — | 0.0011 | 0.0046 |
 
 Read it as: **resolved runs are shorter, edit less source, and test more per edit.**
@@ -197,6 +198,11 @@ By raw discrimination the strongest single signal is run length (`total_steps`,
 0.694), but that is a symptom rather than a cause; the actionable ones are
 `source_edits` and verification intensity. `wasted_step_ratio` remains
 indistinguishable from chance.
+
+"Test runs" here counts `python -c` probes as well: by decision, code the agent
+writes and executes on the spot counts as checking its own work. Excluding those
+probes would sharpen the tests-per-edit signal, but that is not the definition
+used here.
 
 ---
 

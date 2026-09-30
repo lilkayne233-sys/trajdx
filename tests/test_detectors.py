@@ -401,3 +401,122 @@ def test_views_of_different_regions_are_not_a_redundant_read():
         read(2, "src/pkg/core.py", observation=base + "(360 more lines above)\ndef c(): pass\n"),
     ]
     assert RedundantReadDetector().detect(make_trajectory(steps)) == []
+
+
+# --------------------------------------------------------------------------
+# Rulings from the pilot annotation round
+# --------------------------------------------------------------------------
+
+
+def test_a_re_read_after_a_revert_is_not_redundant():
+    """Ruling: after the working tree is rolled back, looking again is justified.
+
+    Three pilot findings hinged on this.  The content came back byte-identical
+    only *because* the agent had reverted its own experiment, so the second look
+    bought information -- it is the only way to know what the file now says.
+    """
+    body = "def parse(): ...\n"
+    steps = [
+        read(0, "src/pkg/core.py", observation=body),
+        shell(1, "cd /repo && git checkout HEAD -- src/pkg/core.py"),
+        read(2, "src/pkg/core.py", observation=body),
+        shell(3, "cd /repo && git checkout HEAD -- src/pkg/core.py"),
+        read(4, "src/pkg/core.py", observation=body),
+    ]
+    assert RedundantReadDetector().detect(make_trajectory(steps)) == []
+
+
+def test_an_edit_between_reads_also_justifies_the_second_look():
+    body = "def parse(): ...\n"
+    steps = [
+        read(0, "src/pkg/core.py", observation=body),
+        edit(1, "src/pkg/core.py", payload="changed"),
+        read(2, "src/pkg/core.py", observation=body),
+        edit(3, "src/pkg/core.py", payload="changed again"),
+        read(4, "src/pkg/core.py", observation=body),
+    ]
+    assert RedundantReadDetector().detect(make_trajectory(steps)) == []
+
+
+def test_three_untouched_identical_reads_are_still_redundant():
+    """The rule must keep firing when nothing moved in between."""
+    body = "def parse(): ...\n"
+    steps = [read(i, "src/pkg/core.py", observation=body) for i in range(3)]
+    findings = RedundantReadDetector().detect(make_trajectory(steps))
+    assert len(findings) == 1
+    assert findings[0].detail["reads"] == [0, 1, 2]
+
+
+def test_opening_readme_and_config_is_not_blind_search():
+    """Ruling: the opening moves of a run are orientation, not investigation."""
+    steps = [
+        read(0, "README.md", observation="install me"),
+        read(1, "pyproject.toml", observation="[project]"),
+        read(2, "requirements.txt", observation="-e ."),
+        read(3, "environment.yml", observation="name: x"),
+        read(4, "pytest.ini", observation="[pytest]"),
+        edit(5, "src/pkg/core.py"),
+        submit(6),
+    ]
+    assert BlindSearchDetector().detect(make_trajectory(steps)) == []
+
+
+def test_documentation_reads_do_not_lengthen_a_streak():
+    """Docs read *inside* a run are orientation too, not attempts to locate."""
+    source = [read(i, "src/pkg/module_%d.py" % i) for i in range(4)]
+    docs = [read(10, "docs/index.rst"), read(11, "CHANGELOG.md")]
+    more = [read(20 + i, "src/pkg/other_%d.py" % i) for i in range(4)]
+    steps = source + docs + more + [edit(30, "src/pkg/core.py"), submit(31)]
+    assert BlindSearchDetector().detect(make_trajectory(steps)) == []
+
+
+def test_a_real_streak_of_source_reads_still_fires():
+    # 13 reads, of which the first `warmup` (=3) are excluded, leaves the
+    # min_run of 10 that the rule needs.
+    steps = [read(i, "src/pkg/module_%d.py" % i) for i in range(13)]
+    steps += [edit(13, "src/pkg/core.py"), submit(14)]
+    findings = BlindSearchDetector().detect(make_trajectory(steps))
+    assert len(findings) == 1
+    assert findings[0].detail["run_length"] == 10
+
+
+def test_no_submit_is_not_reported_twice_when_the_step_budget_ran_out():
+    """Ruling: one anomaly, one finding.
+
+    A run cut off by the iteration cap never submitted, so reporting both
+    patterns counted the same thing twice.  On 300 OpenHands runs, 37 of the 39
+    trajectories carrying either pattern carried both.
+    """
+    capped = make_trajectory(
+        [edit(0, "src/pkg/core.py"), edit(1, "src/pkg/core.py")],
+        exit_status="RuntimeError: Agent reached maximum iteration. Current iteration: 100",
+    )
+    patterns = [
+        f.detail["pattern"] for f in TerminationAnomalyDetector().detect(capped)
+    ]
+    assert patterns.count("iteration_cap") == 1
+    assert "no_submit" not in patterns
+
+
+def test_no_submit_is_still_reported_when_the_run_was_not_capped():
+    run = make_trajectory(
+        [edit(0, "src/pkg/core.py"), edit(1, "src/pkg/core.py")],
+        exit_status="submit",
+    )
+    patterns = [
+        f.detail["pattern"] for f in TerminationAnomalyDetector().detect(run)
+    ]
+    assert "no_submit" in patterns
+    assert "iteration_cap" not in patterns
+
+
+def test_termination_anomalies_never_charge_wasted_steps():
+    """Ruling: fixing the code but never clicking submit is not wasted work."""
+    for exit_status in ("submit", "RuntimeError: Agent reached maximum iteration."):
+        run = make_trajectory(
+            [edit(0, "src/pkg/core.py"), edit(1, "src/pkg/core.py")],
+            exit_status=exit_status,
+        )
+        for finding in TerminationAnomalyDetector().detect(run):
+            if finding.detail["pattern"] in ("no_submit", "iteration_cap"):
+                assert finding.wasted_steps == ()

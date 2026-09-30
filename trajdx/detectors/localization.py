@@ -24,7 +24,7 @@ from trajdx.detectors.base import (
     Tier,
     register_detector,
 )
-from trajdx.heuristics import repo_relative
+from trajdx.heuristics import is_doc_or_config, is_revert_command, repo_relative
 from trajdx.schema import StepKind, Trajectory
 
 _EXPLORE_KINDS = (StepKind.READ, StepKind.SEARCH)
@@ -46,9 +46,14 @@ class BlindSearchDetector(Detector):
     phase: ClassVar[Phase] = Phase.PLANNING
     tier: ClassVar[Tier] = Tier.EXPERIMENTAL
 
-    def __init__(self, min_run: int = 10, explore_budget: int = 4) -> None:
+    def __init__(self, min_run: int = 10, explore_budget: int = 4, warmup: int = 3) -> None:
         self.min_run = min_run
         self.explore_budget = explore_budget
+        #: Steps at the very start of a run never count.  An agent that opens the
+        #: README, the packaging metadata and the requirements file before it has
+        #: any idea where the defect lives is orienting itself; treating that as
+        #: investigation of the bug is what made this rule flag its opening moves.
+        self.warmup = warmup
 
     def detect(self, trajectory: Trajectory) -> list[Finding]:
         return self._read_without_edit(trajectory)
@@ -59,6 +64,11 @@ class BlindSearchDetector(Detector):
 
         Some exploration is mandatory -- you cannot fix what you have not found --
         so only the steps beyond ``explore_budget`` are charged as wasted.
+
+        Two kinds of step are excluded from a streak outright: the opening
+        ``warmup`` steps, and reads of documentation or project configuration.
+        Neither is an attempt to locate the defect, so neither belongs in a
+        measure of how long the agent spent failing to.
         """
         findings: list[Finding] = []
         run: list[int] = []
@@ -97,12 +107,21 @@ class BlindSearchDetector(Detector):
             run.clear()
 
         for idx, step in enumerate(trajectory.steps):
-            if step.kind in _EXPLORE_KINDS:
+            if idx < self.warmup:
+                flush()
+                continue
+            if step.kind in _EXPLORE_KINDS and not self._is_orientation(step):
                 run.append(idx)
             else:
                 flush()
         flush()
         return findings
+
+    @staticmethod
+    def _is_orientation(step: object) -> bool:
+        """A read whose files are all documentation or configuration."""
+        files = getattr(step, "files_touched", ())
+        return bool(files) and all(is_doc_or_config(f) for f in files)
 
 
 @register_detector
@@ -149,7 +168,18 @@ class RedundantReadDetector(Detector):
                 by_content[trajectory.steps[idx].observation_key].append(idx)
 
             for repeats in by_content.values():
-                if len(repeats) < self.max_redundant_reads:
+                # Identical content is not by itself proof of a wasted look: the
+                # file may have been changed and changed back in between, and a
+                # second look after the state moved is justified.  Only reads
+                # with no intervening edit or revert count.
+                justified = self._state_changed_between(trajectory, path)
+                kept: list[int] = []
+                for idx in repeats:
+                    if kept and any(kept[-1] < e < idx for e in justified):
+                        kept = [idx]  # a new generation of the file
+                        continue
+                    kept.append(idx)
+                if len(kept) < self.max_redundant_reads:
                     continue
                 findings.append(
                     Finding(
@@ -157,22 +187,42 @@ class RedundantReadDetector(Detector):
                         category=Category.BLIND_SEARCH,
                         phase=Phase.PLANNING,
                         severity=Severity.LOW,
-                        start=repeats[0],
-                        end=repeats[-1],
-                        wasted_steps=tuple(repeats[1:]),
+                        start=kept[0],
+                        end=kept[-1],
+                        wasted_steps=tuple(kept[1:]),
                         evidence=(
-                            f"{path} viewed {len(repeats)}x returning identical "
+                            f"{path} viewed {len(kept)}x returning identical "
                             f"content each time"
                         ),
                         confidence=0.8,
                         detail={
                             "pattern": "redundant_read",
                             "path": path,
-                            "reads": repeats,
+                            "reads": kept,
                         },
                     )
                 )
         return findings
+
+    @staticmethod
+    def _state_changed_between(trajectory: Trajectory, path: str) -> list[int]:
+        """Steps that move ``path``'s content: edits to it, or a revert.
+
+        The pilot annotators were unanimous that a re-read after the working tree
+        was rolled back is not blind repetition, and they were right: an agent
+        that discards its own experiment with ``git checkout`` has to look at the
+        file again to know what it is looking at.  A ``git checkout`` names no
+        path, so it counts for every file.
+        """
+        out: list[int] = []
+        for idx, step in enumerate(trajectory.steps):
+            if step.kind is StepKind.EDIT and path in step.files_touched:
+                out.append(idx)
+            elif step.kind is StepKind.SHELL and is_revert_command(
+                str(step.args.get("command") or "")
+            ):
+                out.append(idx)
+        return out
 
 
 @register_detector
