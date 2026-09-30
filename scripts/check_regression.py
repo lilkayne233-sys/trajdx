@@ -39,22 +39,20 @@ from trajdx.detectors import REGISTRY, Tier  # noqa: E402
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--findings", type=Path, default=Path("data/labels/to_label_v3.jsonl"))
+    ap.add_argument("--raw", type=Path, default=evaluate.DEFAULT_RAW)
     ap.add_argument("--labels", default="data/labels/labelled_v3_*.jsonl")
     ap.add_argument("--target", type=float, default=0.88)
     args = ap.parse_args()
 
-    findings = {row["finding_id"]: row for row in evaluate.load_jsonl(str(args.findings))}
-    labels = {row["finding_id"]: row for row in evaluate.load_jsonl(args.labels)}
-
-    joined = [
-        {**finding, "verdict": labels[fid]["verdict"]}
-        for fid, finding in findings.items()
-        if fid in labels
-    ]
-    if not joined:
-        print("no joined rows; check the findings/labels paths", file=sys.stderr)
+    if not args.raw.exists():
+        print(f"raw trajectories not found: {args.raw}", file=sys.stderr)
         return 1
+    labels = {row["finding_id"]: row for row in evaluate.load_jsonl(args.labels)}
+    joined, info = evaluate.join_labels(args.raw, labels)
+    if not joined:
+        print("no stored label matches the current detector output", file=sys.stderr)
+        return 1
+    print(f"code {evaluate.code_version()}: {evaluate.coverage_line(info)}\n")
 
     by_detector: dict[str, Counter[str]] = defaultdict(Counter)
     for row in joined:

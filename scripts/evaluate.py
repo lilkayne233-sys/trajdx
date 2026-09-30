@@ -11,12 +11,14 @@ a precision target rather than by tuning until the number looks good.
 
 Usage
 -----
-    python scripts/evaluate.py --findings data/labels/to_label_v2.jsonl \
-                              --labels data/labels/labelled_v2_*.jsonl
+    python scripts/evaluate.py --labels "data/labels/labelled_v3_*.jsonl"
 
-    # README-ready table for the shipped v3 round:
-    python scripts/evaluate.py --findings data/labels/to_label_v3.jsonl \
-                              --labels "data/labels/labelled_v3_*.jsonl" --markdown
+    # README-ready table:
+    python scripts/evaluate.py --labels "data/labels/labelled_v3_*.jsonl" --markdown
+
+The detectors are RE-RUN on the raw trajectories every time.  Stored labels are
+matched to the findings the current code emits; labels whose finding no longer
+exists are reported as stale and never scored.
 """
 
 from __future__ import annotations
@@ -43,6 +45,94 @@ def load_jsonl(pattern: str) -> list[dict[str, Any]]:
                 if line:
                     rows.append(json.loads(line))
     return rows
+
+
+DEFAULT_RAW = Path(__file__).resolve().parents[1] / "data" / "raw" / "openhands_sample.jsonl"
+
+
+def code_version() -> str:
+    """Short commit hash of the code that produced these numbers (+dirty if modified)."""
+    import subprocess
+
+    root = Path(__file__).resolve().parents[1]
+    try:
+        head = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=root,
+                              capture_output=True, text=True, timeout=10).stdout.strip()
+        dirty = subprocess.run(["git", "status", "--porcelain", "--", "trajdx"], cwd=root,
+                               capture_output=True, text=True, timeout=10).stdout.strip()
+    except Exception:  # noqa: BLE001
+        return "unknown"
+    if not head:
+        return "unknown"
+    return head + ("+dirty" if dirty else "")
+
+
+def live_findings(raw: Path) -> tuple[dict[str, dict[str, Any]], int]:
+    """Run the *current* detectors over ``raw``; return findings keyed by finding_id.
+
+    This is the whole point of the script: precision is measured on what the code
+    reports today, never on a stored list of what it once reported.
+    """
+    import warnings
+
+    from trajdx.adapters import load_file
+    from trajdx.detectors import detect_all
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        trajectories = load_file(raw)
+
+    live: dict[str, dict[str, Any]] = {}
+    duplicates = 0
+    for trajectory in trajectories:
+        for finding in detect_all(trajectory):
+            fid = f"{trajectory.instance_id}|{finding.detector}|{finding.start}"
+            if fid in live:
+                duplicates += 1
+                continue
+            live[fid] = {
+                "finding_id": fid,
+                "instance_id": trajectory.instance_id,
+                "resolved": trajectory.resolved,
+                "detector": finding.detector,
+                "confidence": finding.confidence,
+                "evidence": finding.evidence,
+            }
+    return live, duplicates
+
+
+def join_labels(raw: Path, labels: dict[str, dict[str, Any]]):
+    """Join stored verdicts onto freshly computed findings.
+
+    A label whose finding no longer exists (the detector changed, so that step is
+    no longer flagged) is **stale**: it is counted and reported, never scored.
+    """
+    live, duplicates = live_findings(raw)
+    joined = [
+        {**live[fid], "verdict": label["verdict"], "reason": label.get("reason", "")}
+        for fid, label in labels.items()
+        if fid in live
+    ]
+    stale = Counter(fid.split("|")[1] for fid in labels if fid not in live)
+    info = {
+        "live": len(live),
+        "labels": len(labels),
+        "matched": len(joined),
+        "stale": sum(stale.values()),
+        "stale_by_detector": dict(stale),
+        "unlabelled": len(live) - len(joined),
+        "duplicate_ids": duplicates,
+    }
+    return joined, info
+
+
+def coverage_line(info: dict[str, Any]) -> str:
+    stale = ", ".join(f"{d}={n}" for d, n in sorted(info["stale_by_detector"].items())) or "none"
+    return (
+        f"labels: {info['labels']} stored, {info['matched']} still match a finding the current "
+        f"code emits, {info['stale']} stale and NOT scored (by detector: {stale}); "
+        f"current code emits {info['live']} findings, {info['unlabelled']} of them unlabelled."
+    )
 
 
 def precision(valid: int, invalid: int) -> float:
@@ -94,30 +184,27 @@ def markdown_table(by_detector: dict[str, Counter]) -> str:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--findings", type=Path, default=Path("data/labels/to_label_v2.jsonl"))
-    ap.add_argument("--labels", default="data/labels/labelled_v2_*.jsonl")
+    ap.add_argument("--raw", type=Path, default=DEFAULT_RAW,
+                    help="raw trajectories; the detectors are re-run on these every time")
+    ap.add_argument("--labels", default="data/labels/labelled_v3_*.jsonl")
     ap.add_argument("--target", type=float, default=0.88,
                     help="precision target used to pick a recommended threshold")
     ap.add_argument("--markdown", action="store_true",
                     help="print only the per-detector table as markdown, for the README")
     args = ap.parse_args()
 
-    findings = {row["finding_id"]: row for row in load_jsonl(str(args.findings))}
-    labels = {row["finding_id"]: row for row in load_jsonl(args.labels)}
+    if not args.raw.exists():
+        print(f"raw trajectories not found: {args.raw}\n"
+              "The detectors are re-run on every evaluation, so the raw file is required "
+              "(gitignored; regenerate with scripts/fetch_trajectories.py).", file=sys.stderr)
+        return 1
 
-    joined, missing_label, unknown_id = [], [], []
-    for fid, finding in findings.items():
-        label = labels.get(fid)
-        if label is None:
-            missing_label.append(fid)
-            continue
-        joined.append({**finding, "verdict": label["verdict"], "reason": label.get("reason", "")})
-    for fid in labels:
-        if fid not in findings:
-            unknown_id.append(fid)
+    labels = {row["finding_id"]: row for row in load_jsonl(args.labels)}
+    joined, join_info = join_labels(args.raw, labels)
 
     if not joined:
-        print("no joined rows; check the findings/labels paths", file=sys.stderr)
+        print("no stored label matches a finding the current code emits\n"
+              + coverage_line(join_info), file=sys.stderr)
         return 1
 
     by_detector: dict[str, Counter[str]] = defaultdict(Counter)
@@ -126,14 +213,16 @@ def main() -> int:
 
     if args.markdown:
         print(markdown_table(by_detector))
+        print()
+        print(f"_{coverage_line(join_info)}_")
         return 0
 
     valid = sum(1 for r in joined if r["verdict"] == "valid")
     invalid = sum(1 for r in joined if r["verdict"] == "invalid")
     uncertain = sum(1 for r in joined if r["verdict"] == "uncertain")
 
-    print(f"findings  : {len(findings)}")
-    print(f"labelled  : {len(labels)}  (missing label: {len(missing_label)}, unmatched id: {len(unknown_id)})")
+    print(f"code      : {code_version()}")
+    print(coverage_line(join_info))
     print(f"joined    : {len(joined)}")
     print(f"verdicts  : valid={valid} invalid={invalid} uncertain={uncertain}")
     print(f"PRECISION : {precision(valid, invalid):.1%}  (valid / (valid + invalid))\n")

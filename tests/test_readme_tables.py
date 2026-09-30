@@ -5,8 +5,10 @@ is worse than no table at all: it reads like evidence.  These tests pin the
 shipped tables to the scripts that generate them, so a future change to a
 detector fails the suite instead of silently invalidating the README.
 
-Only *tracked* inputs are used by the first test, so it holds in a fresh clone.
-The second test additionally needs ``data/raw/`` (gitignored) and skips without it.
+``scripts/evaluate.py`` RE-RUNS the current detectors on ``data/raw/`` every time
+(stored labels are only matched against what the code emits today), so these tests
+need the gitignored raw file and skip without it -- they never pass by reading a
+stale stored list.
 """
 
 from __future__ import annotations
@@ -21,8 +23,10 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 RAW = ROOT / "data" / "raw" / "openhands_sample.jsonl"
 
-V3_FINDINGS = "data/labels/to_label_v3.jsonl"
 V3_LABELS = "data/labels/labelled_v3_*.jsonl"
+
+
+needs_raw = pytest.mark.skipif(not RAW.exists(), reason="raw trajectories are gitignored")
 
 
 def _run(argv: list[str]) -> str:
@@ -45,6 +49,7 @@ def _readme(*names: str) -> str:
 # --------------------------------------------------------------------------
 
 
+@needs_raw
 def test_readme_detector_table_matches_evaluate():
     """Every generated row must appear verbatim in both READMEs."""
     generated = [
@@ -52,7 +57,6 @@ def test_readme_detector_table_matches_evaluate():
         for line in _run(
             [
                 "scripts/evaluate.py",
-                "--findings", V3_FINDINGS,
                 "--labels", V3_LABELS,
                 "--markdown",
             ]
@@ -74,6 +78,7 @@ def test_readme_detector_table_matches_evaluate():
         )
 
 
+@needs_raw
 def test_readme_precision_claims_match_sample_size():
     """The prose claims must follow from the table that is actually shipped.
 
@@ -83,7 +88,6 @@ def test_readme_precision_claims_match_sample_size():
     output = _run(
         [
             "scripts/evaluate.py",
-            "--findings", V3_FINDINGS,
             "--labels", V3_LABELS,
             "--markdown",
         ]
@@ -146,6 +150,7 @@ def test_readme_process_shape_matches_discrimination():
 # --------------------------------------------------------------------------
 
 
+@needs_raw
 def test_core_detectors_clear_the_precision_bar():
     """The tier promise is enforced by a script; run it from the suite too.
 

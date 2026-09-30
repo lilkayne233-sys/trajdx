@@ -63,27 +63,28 @@ pytest -q
 直接生成，可原样复现：
 
 ```bash
-python scripts/evaluate.py --findings data/labels/to_label_v3.jsonl \
-  --labels "data/labels/labelled_v3_*.jsonl" --markdown
+python scripts/evaluate.py --labels "data/labels/labelled_v3_*.jsonl" --markdown
 ```
 
-| 检测器 | 层级 | Precision | n |
+| Detector | Tier | Precision | n |
 |---|---|---|---|
+| `execution_loop` | experimental | 100.0% | 1 |
 | `termination_anomaly` | core | 91.7% | 24 |
-| `blind_search` | experimental | 80.0% | 5 |
-| `verification_gap` | experimental | 53.8% | 13 |
-| `weak_verification` | experimental | 18.2% | 11 |
-| `execution_loop` | experimental | 10.0% | 30 |
+| `verification_gap` | experimental | 40.0% | 5 |
+| `weak_verification` | experimental | 33.3% | 6 |
+| `blind_search` | experimental | 0.0% | 1 |
 | `environment_stuck` | experimental | — | 0 |
 | `localization_failure` | experimental | — | 0 |
 | `redundant_read` | experimental | — | 0 |
-| **整体** | | **45.8%** | **83** |
+| **整体** | | **73.0%** | **37** |
+
+*评估每次都会用**当前代码重跑检测器**，再把已存的人工/大模型判决按 `finding_id` 对上。83 条已存判决里只有 37 条仍对应当前代码会报出的 finding，其余 46 条已失效、**不计分**（旧规则报过、新规则不再报）。所以下表 n 远小于旧表——旧表把已失效的判决也算进去了。*
 
 读表前先看 `n`：**`n=0`（显示为「—」）表示这条规则在该轮没有命中样本，而不是准确率
 100%，两者绝不能混读。** `redundant_read` 正是这种情形：它在未随仓库发布的轮次里拿到过
 4/4，但仓库内的 v3 轮一条样本都没有，因此在仓库内它既没被证实、也没被证伪——层级只能
 停留在 `experimental`，而不是 core。同样，仓库内可复现的人工结论是 v2 与 v3 两轮的
-**204 条**（覆盖 88 条轨迹），更早与更晚轮次的复核结果没有随仓库发布。
+**145 条**（文件里共 204 行，去掉 59 条重复后；覆盖 88 条轨迹），更早与更晚轮次的复核结果没有随仓库发布。
 
 **在这批可复现的标注里，只有 `termination_anomaly`（91.7%）越过了 88% 这条线。**
 其余规则都照常随包发布，但被标记为 `Tier.EXPERIMENTAL`，并且 `replay` / `findings`
@@ -297,12 +298,10 @@ trajdx/
 ```bash
 # 完整评估：逐检测器精确率、置信度分档、阈值曲线
 python scripts/evaluate.py \
-  --findings data/labels/to_label_v3.jsonl \
   --labels "data/labels/labelled_v3_*.jsonl"
 
 # 只要 README 用的那张表
 python scripts/evaluate.py \
-  --findings data/labels/to_label_v3.jsonl \
   --labels "data/labels/labelled_v3_*.jsonl" --markdown
 
 # 门槛检查：任何一个 core 规则跌破 88%，或没有可验证样本，就以非零码退出

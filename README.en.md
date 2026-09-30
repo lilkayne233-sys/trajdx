@@ -69,21 +69,22 @@ several annotation rounds. The table below is **not hand-written**: it is emitte
 by the command shown, and reproduces exactly.
 
 ```bash
-python scripts/evaluate.py --findings data/labels/to_label_v3.jsonl \
-  --labels "data/labels/labelled_v3_*.jsonl" --markdown
+python scripts/evaluate.py --labels "data/labels/labelled_v3_*.jsonl" --markdown
 ```
 
 | Detector | Tier | Precision | n |
 |---|---|---|---|
+| `execution_loop` | experimental | 100.0% | 1 |
 | `termination_anomaly` | core | 91.7% | 24 |
-| `blind_search` | experimental | 80.0% | 5 |
-| `verification_gap` | experimental | 53.8% | 13 |
-| `weak_verification` | experimental | 18.2% | 11 |
-| `execution_loop` | experimental | 10.0% | 30 |
+| `verification_gap` | experimental | 40.0% | 5 |
+| `weak_verification` | experimental | 33.3% | 6 |
+| `blind_search` | experimental | 0.0% | 1 |
 | `environment_stuck` | experimental | — | 0 |
 | `localization_failure` | experimental | — | 0 |
 | `redundant_read` | experimental | — | 0 |
-| **overall** | | **45.8%** | **83** |
+| **overall** | | **73.0%** | **37** |
+
+*The evaluation **re-runs the current detectors** every time and matches stored verdicts to the findings by `finding_id`. Of 83 stored verdicts only 37 still correspond to a finding the current code emits; the other 46 are stale and **not scored** (an old rule flagged them, the new rule does not). That is why n is far smaller than in the previous table, which scored stale verdicts too.*
 
 Read `n` before you read the precision: **`n=0` (shown as "—") means the rule
 produced no findings in this round, not that it was 100% correct — the two must
@@ -91,8 +92,8 @@ never be conflated.** `redundant_read` is exactly that case: it scored 4/4 in a
 round whose verdicts are not shipped, while the reproducible v3 round contains no
 findings for it at all, so within this repository it is neither confirmed nor
 refuted — its tier therefore stays `experimental` rather than core. For the same
-reason, the human verdicts reproducible from this repository are the **204** from
-the v2 and v3 rounds (covering 88 trajectories); earlier and later rounds were not
+reason, the human verdicts reproducible from this repository are the **145** from
+the v2 and v3 rounds (204 lines in the files, 59 of them duplicates; covering 88 trajectories); earlier and later rounds were not
 shipped.
 
 **On this reproducible sample, only `termination_anomaly` (91.7%) clears the 88%
@@ -336,12 +337,10 @@ it does not depend on the raw trajectories.
 ```bash
 # full evaluation: per-detector precision, confidence bands, threshold curve
 python scripts/evaluate.py \
-  --findings data/labels/to_label_v3.jsonl \
   --labels "data/labels/labelled_v3_*.jsonl"
 
 # just the table the README quotes
 python scripts/evaluate.py \
-  --findings data/labels/to_label_v3.jsonl \
   --labels "data/labels/labelled_v3_*.jsonl" --markdown
 
 # bar check: exits non-zero if any core rule drops below 88%, or has no sample
