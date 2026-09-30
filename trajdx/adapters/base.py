@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Mapping
 
 from trajdx.schema import Trajectory
 
@@ -99,10 +99,20 @@ def _iter_records(path: Path):
         yield data
 
 
-def load_file(path: str | Path, framework: str | None = None) -> list[Trajectory]:
+def load_file(
+    path: str | Path,
+    framework: str | None = None,
+    gold: str | Path | Mapping[str, list[str]] | None = None,
+) -> list[Trajectory]:
     """Load every trajectory contained in ``path``.
 
     ``framework`` forces a specific adapter; by default each record is sniffed.
+
+    ``gold`` is either a sidecar path or an ``instance_id -> files`` mapping.
+    When given, matching trajectories receive ``meta["gold_files"]`` so that
+    ``localization_failure`` can run.  It is attached here, at the single point
+    where trajectories are constructed, so every entry point -- CLI, scripts and
+    tests -- gets the behaviour without repeating it.
     """
     path = Path(path)
     forced = ADAPTERS.get(framework) if framework else None
@@ -111,6 +121,12 @@ def load_file(path: str | Path, framework: str | None = None) -> list[Trajectory
     for record in _iter_records(path):
         adapter = forced or detect_adapter(record)
         out.append(adapter.parse(record))
+
+    if gold is not None:
+        from trajdx.gold import attach_gold, load_gold
+
+        mapping = load_gold(gold) if isinstance(gold, (str, Path)) else gold
+        attach_gold(out, mapping)
     return out
 
 

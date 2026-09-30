@@ -72,6 +72,13 @@ def main() -> int:
         ("wasted_steps", lambda t, r: r.wasted_steps),
         ("wasted_step_ratio", lambda t, r: r.ratio),
         ("n_findings", lambda t, r: r.n_findings),
+        # Process shape.  These are the metrics that actually separate outcomes;
+        # they live here rather than in the waste accounting because they describe
+        # how a run was conducted, not how much of it was wasted.
+        ("source_edits", lambda t, r: r.source_edits),
+        ("test_runs", lambda t, r: r.test_runs),
+        ("tests_per_source_edit", lambda t, r: r.tests_per_source_edit),
+        ("test_run_ratio", lambda t, r: r.test_run_ratio),
     ]
 
     print(f"n = {len(rows)}  (failed = {sum(1 for t, _ in rows if failed(t))})\n")
@@ -86,6 +93,32 @@ def main() -> int:
             (r.by_category.get(category, 0), failed(t)) for t, r in rows
         )
         print(f"{'wasted_steps:' + category:36} {value:7.3f}")
+
+    # ------------------------------------------------------------ group means
+    # The README quotes resolved/unresolved means next to each AUC; printing them
+    # here is what makes those numbers reproducible rather than asserted.
+    print("\nprocess shape by outcome (mean per run)")
+    header = f"{'metric':28} {'resolved':>10} {'unresolved':>12}"
+    print(header)
+    print("-" * len(header))
+    resolved = [r for t, r in rows if t.resolved]
+    unresolved = [r for t, r in rows if not t.resolved]
+
+    def mean(values: list[float]) -> float:
+        return sum(values) / len(values) if values else float("nan")
+
+    for name, field, decimals in [
+        ("total_steps", lambda r: r.total_steps, 2),
+        ("source_edits", lambda r: r.source_edits, 2),
+        ("test_runs", lambda r: r.test_runs, 2),
+        ("tests_per_source_edit", lambda r: r.tests_per_source_edit, 2),
+        ("test_run_ratio", lambda r: r.test_run_ratio, 4),
+        ("wasted_step_ratio", lambda r: r.ratio, 4),
+    ]:
+        print(
+            f"{name:28} {mean([field(r) for r in resolved]):10.{decimals}f} "
+            f"{mean([field(r) for r in unresolved]):12.{decimals}f}"
+        )
 
     print("\nconcentration of failures at the high end of the waste distribution")
     print(f"{'top quantile by WSR':36} {'n':>5} {'failed':>8}")

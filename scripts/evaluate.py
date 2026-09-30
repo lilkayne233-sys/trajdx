@@ -13,6 +13,10 @@ Usage
 -----
     python scripts/evaluate.py --findings data/labels/to_label_v2.jsonl \
                               --labels data/labels/labelled_v2_*.jsonl
+
+    # README-ready table for the shipped v3 round:
+    python scripts/evaluate.py --findings data/labels/to_label_v3.jsonl \
+                              --labels "data/labels/labelled_v3_*.jsonl" --markdown
 """
 
 from __future__ import annotations
@@ -53,12 +57,49 @@ def _bar(value: float, width: int = 20) -> str:
     return "#" * filled + "." * (width - filled)
 
 
+def markdown_table(by_detector: dict[str, Counter]) -> str:
+    """Render the per-detector precision table as markdown.
+
+    Every registered detector is listed, including the ones that produced no
+    findings in this round (n=0, precision "—").  Dropping the silent rules would
+    hide the difference between "validated" and "never fired", which is exactly
+    the distinction the table exists to make.  Rows are ordered by precision so
+    the ordering below is a *result*, not a hand-maintained list.
+    """
+    from trajdx.detectors import REGISTRY, Tier
+
+    rows: list[tuple[str, str, str, int, float]] = []
+    for name, cls in sorted(REGISTRY.items()):
+        counter = by_detector.get(name, Counter())
+        valid, invalid = counter["valid"], counter["invalid"]
+        n = valid + invalid
+        if n:
+            rows.append((name, cls.tier.value, f"{valid / n:.1%}", n, valid / n))
+        else:
+            rows.append((name, cls.tier.value, "—", 0, -1.0))
+    rows.sort(key=lambda row: (-row[4], row[0]))
+
+    total_valid = sum(c["valid"] for c in by_detector.values())
+    total_invalid = sum(c["invalid"] for c in by_detector.values())
+
+    lines = ["| Detector | Tier | Precision | n |", "|---|---|---|---|"]
+    for name, tier, prec, n, _ in rows:
+        lines.append(f"| `{name}` | {tier} | {prec} | {n} |")
+    overall = precision(total_valid, total_invalid)
+    lines.append(
+        f"| **overall** | | **{overall:.1%}** | **{total_valid + total_invalid}** |"
+    )
+    return "\n".join(lines)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--findings", type=Path, default=Path("data/labels/to_label_v2.jsonl"))
     ap.add_argument("--labels", default="data/labels/labelled_v2_*.jsonl")
     ap.add_argument("--target", type=float, default=0.88,
                     help="precision target used to pick a recommended threshold")
+    ap.add_argument("--markdown", action="store_true",
+                    help="print only the per-detector table as markdown, for the README")
     args = ap.parse_args()
 
     findings = {row["finding_id"]: row for row in load_jsonl(str(args.findings))}
@@ -79,6 +120,14 @@ def main() -> int:
         print("no joined rows; check the findings/labels paths", file=sys.stderr)
         return 1
 
+    by_detector: dict[str, Counter[str]] = defaultdict(Counter)
+    for row in joined:
+        by_detector[row["detector"]][row["verdict"]] += 1
+
+    if args.markdown:
+        print(markdown_table(by_detector))
+        return 0
+
     valid = sum(1 for r in joined if r["verdict"] == "valid")
     invalid = sum(1 for r in joined if r["verdict"] == "invalid")
     uncertain = sum(1 for r in joined if r["verdict"] == "uncertain")
@@ -94,9 +143,6 @@ def main() -> int:
     header = f"{'detector':22} {'n':>4} {'valid':>6} {'invalid':>8} {'prec':>7}  {'':20}"
     print(header)
     print("-" * len(header))
-    by_detector: dict[str, Counter[str]] = defaultdict(Counter)
-    for row in joined:
-        by_detector[row["detector"]][row["verdict"]] += 1
     for detector, counter in sorted(by_detector.items()):
         v, i = counter["valid"], counter["invalid"]
         p = precision(v, i)

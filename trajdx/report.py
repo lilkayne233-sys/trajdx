@@ -79,6 +79,14 @@ def summary_panel(trajectory: Trajectory, report: WasteReport) -> Panel:
     body.append(f"{report.wasted_steps}", style="bold yellow")
     body.append(f" ({report.ratio:.1%})")
     body.append(f"   {report.n_findings} finding(s)")
+
+    # Process shape, shown next to waste on purpose: waste does not separate
+    # outcomes (AUC 0.52), verification intensity does (AUC 0.62 inverted).
+    body.append(
+        f"\n{report.source_edits} source edit(s) · {report.test_runs} test run(s) · "
+        f"{report.tests_per_source_edit:.2f} test(s) per source edit",
+        style="dim",
+    )
     if trajectory.exit_status:
         body.append(f"\nexit: {trajectory.exit_status}", style="dim")
 
@@ -223,6 +231,13 @@ def outcome_table(stats: OutcomeStats) -> Table:
     table.add_column("value", justify="right")
     table.add_row("runs", str(stats.n))
     table.add_row("mean steps", f"{stats.mean_steps:.1f}")
+    # Process shape leads, waste follows.  The ordering mirrors the measured
+    # discrimination: total_steps 0.69 and tests-per-source-edit 0.62 inverted
+    # carry signal, mean WSR at 0.52 does not.
+    table.add_row("mean source edits", f"{stats.mean_source_edits:.1f}")
+    table.add_row("mean test runs", f"{stats.mean_test_runs:.1f}")
+    table.add_row("mean tests per source edit", f"{stats.mean_tests_per_source_edit:.2f}")
+    table.add_row("mean test run ratio", f"{stats.mean_test_run_ratio:.1%}")
     table.add_row("mean wasted steps", f"{stats.mean_wasted:.1f}")
     table.add_row("mean WSR", f"{stats.mean_ratio:.1%}")
     for category in sorted(stats.category_rate):

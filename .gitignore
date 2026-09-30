@@ -11,5 +11,8 @@ data/raw/
 data/cache/
 data/reports/
 
+# gold patch file sets, reproducible via `python scripts/fetch_gold.py`
+data/gold/
+
 # annotation working files (the reviewed gold set under data/labels/ IS tracked)
 data/labels/*.working.csv

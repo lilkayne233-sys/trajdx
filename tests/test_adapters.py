@@ -201,6 +201,157 @@ def test_sweagent_recognises_test_execution():
 
 
 # --------------------------------------------------------------------------
+# SWE-agent, function-calling serialization
+# --------------------------------------------------------------------------
+
+#: Mirrors the shape of the real `trajectories/demonstrations/function_calling_simple.traj`
+#: shipped upstream: a chat `history` instead of a `trajectory` list, with
+#: structured `tool_calls` alongside a redundant mini-language `action` string.
+#: Running the adapter over the upstream logs is what surfaced this format.
+SWE_AGENT_HISTORY = {
+    "instance_id": "swe-agent__test-repo-i2",
+    "history": [
+        {"role": "system", "content": "SETTING: you are an agent",
+         "message_type": "system_prompt", "agent": "main"},
+        {"role": "user", "content": "ISSUE: SyntaxError in missing_colon.py",
+         "message_type": "observation", "agent": "main"},
+        {
+            "role": "assistant",
+            "content": "Find the file.",
+            "thought": "Find the file.",
+            "action": "find_file missing_colon.py",
+            "message_type": "action",
+            "tool_calls": [{"id": "call_1", "type": "function", "function": {
+                "name": "find_file", "arguments": '{"file_name": "missing_colon.py"}'}}],
+        },
+        {"role": "tool", "content": 'Found 1 matches for "missing_colon.py" in /repo:\n'
+                                    "/repo/tests/missing_colon.py\n(Open file: n/a)",
+         "message_type": "observation", "tool_call_ids": ["call_1"]},
+        {
+            "role": "assistant",
+            "content": "Open it.",
+            "thought": "Open it.",
+            "action": 'open "tests/missing_colon.py"',
+            "message_type": "action",
+            "tool_calls": [{"id": "call_2", "type": "function", "function": {
+                "name": "open", "arguments": '{"path": "tests/missing_colon.py"}'}}],
+        },
+        {"role": "tool", "content": "[File: tests/missing_colon.py]\n1:def division(a, b)\n"
+                                    "(Open file: /repo/tests/missing_colon.py)",
+         "message_type": "observation", "tool_call_ids": ["call_2"]},
+        {
+            "role": "assistant",
+            "content": "Add the missing colon.",
+            "thought": "Add the missing colon.",
+            "action": "edit 'def division(a, b)' 'def division(a, b):'",
+            "message_type": "action",
+            "tool_calls": [{"id": "call_3", "type": "function", "function": {
+                "name": "edit",
+                "arguments": '{"search": "def division(a, b)", "replace": "def division(a, b):"}'}}],
+        },
+        {"role": "tool", "content": "Text replaced.\n(Open file: /repo/tests/missing_colon.py)",
+         "message_type": "observation", "tool_call_ids": ["call_3"]},
+        {
+            "role": "assistant",
+            "content": "Run it.",
+            "thought": "Run it.",
+            "action": "python tests/missing_colon.py",
+            "message_type": "action",
+            "tool_calls": [{"id": "call_4", "type": "function", "function": {
+                "name": "bash", "arguments": '{"command": "python tests/missing_colon.py"}'}}],
+        },
+        {"role": "tool", "content": "8.2\n(Open file: /repo/tests/missing_colon.py)",
+         "message_type": "observation", "tool_call_ids": ["call_4"]},
+        {
+            "role": "assistant",
+            "content": "Done.",
+            "thought": "Done.",
+            "action": "submit",
+            "message_type": "action",
+            "tool_calls": [{"id": "call_5", "type": "function", "function": {
+                "name": "submit", "arguments": "{}"}}],
+        },
+        {"role": "tool", "content": "diff --git a/tests/missing_colon.py b/tests/missing_colon.py",
+         "message_type": "observation", "tool_call_ids": ["call_5"]},
+    ],
+}
+
+
+def test_sweagent_reads_the_function_calling_serialization():
+    """A format the first version could not read at all -- and failed loudly on."""
+    trajectory = SWEAgentAdapter.parse(SWE_AGENT_HISTORY)
+    assert trajectory.framework == "sweagent"
+    assert trajectory.meta["serialization"] == "history"
+    assert trajectory.problem_statement.startswith("ISSUE: SyntaxError")
+    assert [s.kind for s in trajectory.steps] == [
+        StepKind.SEARCH,
+        StepKind.READ,
+        StepKind.EDIT,
+        StepKind.SHELL,
+        StepKind.SUBMIT,
+    ]
+
+
+def test_sweagent_history_pairs_results_by_tool_call_ids():
+    trajectory = SWEAgentAdapter.parse(SWE_AGENT_HISTORY)
+    assert "Found 1 matches" in (trajectory.steps[0].observation or "")
+    assert "Text replaced" in (trajectory.steps[2].observation or "")
+    assert trajectory.steps[1].args["path"] == "tests/missing_colon.py"
+
+
+def test_sweagent_history_edit_targets_the_open_file():
+    """The edit tool call names no path, so the open-file hint has to supply it."""
+    trajectory = SWEAgentAdapter.parse(SWE_AGENT_HISTORY)
+    edit_step = trajectory.steps[2]
+    assert edit_step.files_touched == ("tests/missing_colon.py",)
+    assert edit_step.args["old_str"] == "def division(a, b)"
+    assert edit_step.args["new_str"] == "def division(a, b):"
+
+
+def test_sweagent_history_marks_shell_steps():
+    trajectory = SWEAgentAdapter.parse(SWE_AGENT_HISTORY)
+    assert trajectory.steps[3].kind is StepKind.SHELL
+    assert trajectory.steps[3].args["command"] == "python tests/missing_colon.py"
+    assert trajectory.steps[3].is_test_run is False
+
+
+def test_sweagent_sniffs_the_history_serialization():
+    assert SWEAgentAdapter.sniff(SWE_AGENT_HISTORY) >= 0.5
+    assert OpenHandsAdapter.sniff(SWE_AGENT_HISTORY) == 0.0
+    assert detect_adapter(SWE_AGENT_HISTORY) is SWEAgentAdapter
+
+
+def test_sweagent_history_without_tool_calls_falls_back_to_the_action_string():
+    payload = {
+        "instance_id": "x",
+        "history": [
+            {"role": "assistant", "action": "open src/a.py", "thought": "look",
+             "message_type": "action"},
+            {"role": "assistant", "content": "just thinking",
+             "message_type": "action"},
+            {"role": "assistant", "action": "submit", "message_type": "action"},
+        ],
+    }
+    trajectory = SWEAgentAdapter.parse(payload)
+    assert [s.kind for s in trajectory.steps] == [
+        StepKind.READ,
+        StepKind.THOUGHT,
+        StepKind.SUBMIT,
+    ]
+
+
+def test_generic_chat_history_is_not_claimed_by_sweagent():
+    """Only SWE-agent's own `message_type` marker earns recognition."""
+    generic = {
+        "history": [
+            {"role": "system", "content": "hi"},
+            {"role": "user", "content": "hello"},
+        ]
+    }
+    assert SWEAgentAdapter.sniff(generic) < 0.5
+
+
+# --------------------------------------------------------------------------
 # Adapter selection
 # --------------------------------------------------------------------------
 

@@ -24,6 +24,7 @@ from trajdx.detectors.base import (
     Tier,
     register_detector,
 )
+from trajdx.heuristics import repo_relative
 from trajdx.schema import StepKind, Trajectory
 
 _EXPLORE_KINDS = (StepKind.READ, StepKind.SEARCH)
@@ -113,17 +114,24 @@ class RedundantReadDetector(Detector):
     change.  What is provably wasted is viewing it again and having the second
     look return exactly what the first one did: the step bought no information.
 
-    Measured at 4/4 valid on the held-out annotation sample, which is why it
-    carries the core tier.  It lives in its own class rather than inside
-    ``BlindSearchDetector`` because the two rules of that family landed at
-    opposite ends of the precision range (100% vs 0%), and a reporting tier only
-    means something when a detector holds rules of comparable quality.
+    Measured at 4/4 valid on the held-out annotation sample -- but that sample is the
+    v4 round, whose human verdicts are **not shipped in this repository**.  The
+    reproducible v3 round contains no `redundant_read` findings at all, so within
+    this repo the rule has no evidence either way.  A tier is a claim about
+    measured precision, so it is held at ``EXPERIMENTAL`` until a round that is
+    actually shipped supports it; the 4/4 is recorded here as provenance rather
+    than as a validation.
+
+    It lives in its own class rather than inside ``BlindSearchDetector`` because
+    the two rules of that family behave quite differently (a clean 4/4 against a
+    rule that fired once), and a reporting tier only means something when a
+    detector holds rules of comparable, *verifiable* quality.
     """
 
     name: ClassVar[str] = "redundant_read"
     category: ClassVar[Category] = Category.BLIND_SEARCH
     phase: ClassVar[Phase] = Phase.PLANNING
-    tier: ClassVar[Tier] = Tier.CORE
+    tier: ClassVar[Tier] = Tier.EXPERIMENTAL
 
     def __init__(self, max_redundant_reads: int = 3) -> None:
         self.max_redundant_reads = max_redundant_reads
@@ -186,11 +194,21 @@ class LocalizationFailureDetector(Detector):
         if not gold:
             return []
 
-        gold_set = {str(g).lstrip("./") for g in gold}
-        patched = set(trajectory.patch_files)
+        # Both sides are normalized to repo-relative form.  Gold diffs come from a
+        # task dataset and agent edits come out of a container path, so comparing
+        # them raw produces "no overlap" for every instance -- a false positive on
+        # every run.  `repo_relative` is the same normalizer the adapters use.
+        gold_set = {repo_relative(g) for g in gold}
+        gold_set.discard("")
+        patched = {repo_relative(p) for p in trajectory.patch_files}
+        patched.discard("")
         edited = {
-            f for step in trajectory.steps if step.kind is StepKind.EDIT for f in step.files_touched
+            repo_relative(f)
+            for step in trajectory.steps
+            if step.kind is StepKind.EDIT
+            for f in step.files_touched
         }
+        edited.discard("")
 
         if patched & gold_set:
             return []

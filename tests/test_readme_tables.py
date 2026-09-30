@@ -1,0 +1,166 @@
+"""The README's evaluation tables must stay reproducible.
+
+A documentation table that has drifted away from what the code actually computes
+is worse than no table at all: it reads like evidence.  These tests pin the
+shipped tables to the scripts that generate them, so a future change to a
+detector fails the suite instead of silently invalidating the README.
+
+Only *tracked* inputs are used by the first test, so it holds in a fresh clone.
+The second test additionally needs ``data/raw/`` (gitignored) and skips without it.
+"""
+
+from __future__ import annotations
+
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+ROOT = Path(__file__).resolve().parents[1]
+RAW = ROOT / "data" / "raw" / "openhands_sample.jsonl"
+
+V3_FINDINGS = "data/labels/to_label_v3.jsonl"
+V3_LABELS = "data/labels/labelled_v3_*.jsonl"
+
+
+def _run(argv: list[str]) -> str:
+    result = subprocess.run(
+        [sys.executable, *argv],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, f"{argv} failed:\n{result.stderr}"
+    return result.stdout
+
+
+def _readme(*names: str) -> str:
+    return "\n".join((ROOT / name).read_text(encoding="utf-8") for name in names)
+
+
+# --------------------------------------------------------------------------
+# Detector precision table
+# --------------------------------------------------------------------------
+
+
+def test_readme_detector_table_matches_evaluate():
+    """Every generated row must appear verbatim in both READMEs."""
+    generated = [
+        line.strip()
+        for line in _run(
+            [
+                "scripts/evaluate.py",
+                "--findings", V3_FINDINGS,
+                "--labels", V3_LABELS,
+                "--markdown",
+            ]
+        ).splitlines()
+        if line.strip()
+    ]
+    detector_rows = [line for line in generated if line.startswith("| `")]
+    assert detector_rows, "evaluate.py --markdown produced no detector rows"
+
+    for readme in ("README.md", "README.en.md"):
+        text = (ROOT / readme).read_text(encoding="utf-8")
+        for row in detector_rows:
+            assert row in text, f"{readme} is stale, missing row:\n  {row}"
+
+        overall = next(line for line in generated if "**overall**" in line)
+        localized = overall.replace("**overall**", "**整体**")
+        assert overall in text or localized in text, (
+            f"{readme} is stale, missing the overall row:\n  {overall}"
+        )
+
+
+def test_readme_precision_claims_match_sample_size():
+    """The prose claims must follow from the table that is actually shipped.
+
+    The n column once summed to 57 under a caption that said 83, and two rules
+    were quoted at precisions their round never measured.  Both are caught here.
+    """
+    output = _run(
+        [
+            "scripts/evaluate.py",
+            "--findings", V3_FINDINGS,
+            "--labels", V3_LABELS,
+            "--markdown",
+        ]
+    )
+    rows = re.findall(r"^\| `(\w+)` \| (\w+) \| ([\d.]+%|—) \| (\d+) \|$", output, re.M)
+    assert rows, "could not parse the generated table"
+
+    total_n = sum(int(n) for *_rest, n in rows)
+    overall = re.search(r"\*\*overall\*\* \| \| \*\*([\d.]+%)\*\* \| \*\*(\d+)\*\*", output)
+    assert overall, "could not parse the overall row"
+    assert int(overall.group(2)) == total_n, (
+        f"per-detector n sums to {total_n} but the overall row says {overall.group(2)}"
+    )
+
+    # Whatever clears the bar in this round is what the prose may claim.
+    cleared = [
+        name
+        for name, tier, precision, n in rows
+        if tier == "core" and precision != "—" and float(precision.rstrip("%")) >= 88.0
+    ]
+    chinese = (ROOT / "README.md").read_text(encoding="utf-8")
+    for name in cleared:
+        assert name in chinese, f"README does not mention {name}, which clears 88%"
+    assert cleared == ["termination_anomaly"], (
+        f"the 88% claim in the README needs updating; this round clears: {cleared}"
+    )
+
+
+# --------------------------------------------------------------------------
+# Process-shape metrics
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(not RAW.exists(), reason="raw trajectories are gitignored")
+def test_readme_process_shape_matches_discrimination():
+    output = _run(["scripts/discrimination.py"])
+    aucs = dict(re.findall(r"^(\w+)\s+(0\.\d+)$", output, re.M))
+    assert aucs, "could not parse AUC values"
+
+    for readme in ("README.md", "README.en.md"):
+        text = (ROOT / readme).read_text(encoding="utf-8")
+        for metric in (
+            "total_steps",
+            "source_edits",
+            "tests_per_source_edit",
+            "test_run_ratio",
+            "wasted_step_ratio",
+        ):
+            value = aucs[metric]
+            assert value in text, f"{readme} does not quote {metric} AUC {value}"
+            if float(value) < 0.5:
+                inverted = f"{1 - float(value):.3f}"
+                assert inverted in text, (
+                    f"{readme} does not quote the inverted AUC {inverted} for {metric}"
+                )
+
+
+# --------------------------------------------------------------------------
+# Tier enforcement
+# --------------------------------------------------------------------------
+
+
+def test_core_detectors_clear_the_precision_bar():
+    """The tier promise is enforced by a script; run it from the suite too.
+
+    `tier=core` is what `replay` shows by default and what the README calls
+    validated, so a core rule that has slipped below the bar -- or that has no
+    validated sample at all -- must break the build rather than the docs.
+    """
+    result = subprocess.run(
+        [sys.executable, "scripts/check_regression.py"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, (
+        "core-tier precision regressed:\n"
+        + result.stdout
+        + result.stderr
+    )

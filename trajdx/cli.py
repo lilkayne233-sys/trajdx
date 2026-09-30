@@ -90,16 +90,31 @@ def _compact(text: str | None, limit: int) -> str:
     return cleaned.strip()[:limit]
 
 
-def _load(data: Path, framework: str | None, limit: int | None = None) -> list[Trajectory]:
+def _load(
+    data: Path,
+    framework: str | None,
+    limit: int | None = None,
+    gold: Path | None = None,
+) -> list[Trajectory]:
     if framework and framework not in ADAPTERS:
         console.print(f"[red]unknown framework '{framework}'[/]; known: {sorted(ADAPTERS)}")
         raise typer.Exit(code=2)
     try:
-        trajectories = load_file(data, framework=framework)
+        trajectories = load_file(data, framework=framework, gold=gold)
     except Exception as exc:  # surface the parse failure as a CLI error, not a traceback
         console.print(f"[red]failed to load {data}:[/] {exc}")
         raise typer.Exit(code=2) from exc
     return trajectories[:limit] if limit else trajectories
+
+
+#: Shared option so every command that can use gold data spells it the same way.
+GOLD_OPTION = typer.Option(
+    None,
+    "--gold",
+    exists=True,
+    dir_okay=False,
+    help="gold patch sidecar (JSONL); enables the localization_failure rule",
+)
 
 
 # --------------------------------------------------------------------------
@@ -117,9 +132,10 @@ def replay(
     min_confidence: float = typer.Option(0.0, "--min-confidence", help="hide weaker findings"),
     only: Optional[list[str]] = typer.Option(None, "--only", help="run only these detectors"),
     tier: str = typer.Option(DEFAULT_TIER, "--tier", help="core | experimental | all"),
+    gold: Optional[Path] = GOLD_OPTION,
 ) -> None:
     """Replay one trajectory step by step, with wasted steps flagged."""
-    trajectories = _load(data, framework)
+    trajectories = _load(data, framework, gold=gold)
     if not trajectories:
         console.print("[red]no trajectories found[/]")
         raise typer.Exit(code=1)
@@ -158,9 +174,16 @@ def diagnose(
     ),
     out: Optional[Path] = typer.Option(None, "--out", help="write the aggregate report as JSON"),
     quiet: bool = typer.Option(False, "--quiet", "-q", help="skip the console tables"),
+    gold: Optional[Path] = GOLD_OPTION,
 ) -> None:
     """Diagnose a whole corpus and print the aggregate breakdown."""
-    trajectories = _load(data, framework, limit)
+    trajectories = _load(data, framework, limit, gold=gold)
+    if gold:
+        # Coverage is reported because an unattached sidecar and a rule that
+        # simply found nothing look identical in the output otherwise.
+        from trajdx.gold import coverage
+
+        console.print(f"[dim]gold coverage: {coverage(trajectories)}[/]")
     results = _diagnose(
         trajectories, only=only, min_confidence=min_confidence, outcome=outcome, tier=tier
     )
@@ -202,9 +225,10 @@ def export(
     only: Optional[list[str]] = typer.Option(None, "--only"),
     tier: str = typer.Option("all", "--tier", help="core | experimental | all"),
     with_findings: bool = typer.Option(True, "--findings/--no-findings"),
+    gold: Optional[Path] = GOLD_OPTION,
 ) -> None:
     """Dump per-trajectory diagnostics for downstream analysis."""
-    trajectories = _load(data, framework, limit)
+    trajectories = _load(data, framework, limit, gold=gold)
     results = _diagnose(trajectories, only=only, min_confidence=min_confidence, tier=tier)
     records = [r.to_dict(with_findings=with_findings) for _, _, r in results]
 
@@ -218,8 +242,12 @@ def export(
     elif fmt == "csv":
         # Flatten to the columns that matter for spreadsheets; findings stay in JSON.
         fieldnames = [
-            "instance_id", "framework", "resolved", "total_steps", "wasted_steps",
-            "wasted_step_ratio", "n_findings", *sorted({c for r in records for c in r["by_category"]}),
+            "instance_id", "framework", "resolved", "total_steps",
+            # Process shape travels with the waste columns: it is the part of the
+            # export that actually separates passing runs from failing ones.
+            "source_edits", "test_runs", "tests_per_source_edit", "test_run_ratio",
+            "wasted_steps", "wasted_step_ratio", "n_findings",
+            *sorted({c for r in records for c in r["by_category"]}),
         ]
         with out.open("w", encoding="utf-8", newline="") as fh:
             writer = csv.DictWriter(fh, fieldnames=fieldnames, extrasaction="ignore")
@@ -245,12 +273,13 @@ def findings(
     context: int = typer.Option(3, "--context", help="steps of context on each side"),
     obs_chars: int = typer.Option(1200, "--obs-chars", help="observation truncation"),
     seed: int = typer.Option(0, "--seed"),
+    gold: Optional[Path] = GOLD_OPTION,
 ) -> None:
     """Sample findings with step context, ready for LLM pre-labelling and review."""
     import random
 
     rng = random.Random(seed)
-    trajectories = _load(data, framework, limit)
+    trajectories = _load(data, framework, limit, gold=gold)
 
     buckets: dict[str, list[tuple[Trajectory, object]]] = {}
     for trajectory in trajectories:

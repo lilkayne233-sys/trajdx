@@ -26,14 +26,15 @@ Measured on annotated findings, the distinction is stark:
 ===========================================  =====  =========
 condition                                    n      precision
 ===========================================  =====  =========
-an edit happened between the repetitions     29      3.4%
-nothing was edited between the repetitions     3     66.7%
+an edit happened between the repetitions     29      6.9%
+nothing was edited between the repetitions    1    100.0%
 ===========================================  =====  =========
 
 So on OpenHands trajectories, "the agent repeated a command" is almost never
 evidence of waste on its own -- which is a real result, and the opposite of what
-a naive loop detector assumes.  The surviving rule is precise but rare, which is
-why this detector ships as experimental.
+a naive loop detector assumes.  The gated rule is rare (5 findings corpus-wide,
+down from 136 when the gate is off), and the no-edit cell holds a single case:
+too few to claim precision, which is why this detector ships as experimental.
 """
 
 from __future__ import annotations

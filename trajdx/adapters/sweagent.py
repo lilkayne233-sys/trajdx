@@ -5,6 +5,20 @@ SWE-agent already stores one object per step, so the work here is mostly
 ``find_file``, ``submit``.  The subtle part is that ``edit`` carries no filename
 -- it acts on whatever file the editor currently has open, which is only visible
 in the per-step ``state`` blob.
+
+Two serializations are supported
+--------------------------------
+Running this adapter over the real logs vendored in the upstream SWE-agent
+repository surfaced a second format the first version could not read at all: the
+**function-calling** serialization, which stores a chat ``history`` (roles
+``system``/``user``/``assistant``/``tool``) instead of a ``trajectory`` list, and
+carries structured ``tool_calls`` arguments rather than a mini-language string.
+
+Both are parsed here rather than in two adapters because they are the same agent
+and produce the same steps; only the envelope differs.  For the chat form the
+structured arguments win over the ``action`` string when both are present, since
+they do not have to be re-parsed, and the open-file pointer is tracked from the
+``open`` calls and from the ``(Open file: …)`` hint every tool result carries.
 """
 
 from __future__ import annotations
@@ -29,6 +43,31 @@ _SEARCH = re.compile(
 )
 _SUBMIT = re.compile(r"^(?:submit|exit|exit_error|exit_cost|exit_api|exit_context)\s*$")
 
+#: Tool results in the chat serialization end with `(Open file: /path/to/file)`.
+#: It is the only place the currently-open file is recorded in that format.
+_OPEN_FILE_HINT = re.compile(r"\(Open file:\s*([^)\r\n]+)\)")
+
+#: Function-calling tool name -> normalized step kind.
+_TOOL_KINDS: dict[str, StepKind] = {
+    "open": StepKind.READ,
+    "open_file": StepKind.READ,
+    "find_file": StepKind.SEARCH,
+    "search": StepKind.SEARCH,
+    "search_dir": StepKind.SEARCH,
+    "search_file": StepKind.SEARCH,
+    "edit": StepKind.EDIT,
+    "str_replace": StepKind.EDIT,
+    "insert": StepKind.EDIT,
+    "create": StepKind.EDIT,
+    "create_file": StepKind.EDIT,
+    "undo_edit": StepKind.EDIT,
+    "bash": StepKind.SHELL,
+    "execute_bash": StepKind.SHELL,
+    "run": StepKind.SHELL,
+    "submit": StepKind.SUBMIT,
+    "finish": StepKind.SUBMIT,
+}
+
 
 @register_adapter
 class SWEAgentAdapter(Adapter):
@@ -40,24 +79,44 @@ class SWEAgentAdapter(Adapter):
         if not isinstance(payload, dict):
             return 0.0
         steps = payload.get("trajectory")
-        if not isinstance(steps, list) or not steps:
+        if isinstance(steps, list) and steps:
+            # SWE-agent steps carry `action`/`observation` and have no `role`.
+            head = [s for s in steps[:5] if isinstance(s, dict)]
+            if not head:
+                return 0.0
+            if all("role" in s for s in head):
+                return 0.0
+            if any("action" in s or "thought" in s for s in head):
+                if "environment" in payload or "info" in payload:
+                    return 1.0
+                return 0.7
             return 0.0
-        # SWE-agent steps carry `action`/`observation` and have no `role`.
-        head = [s for s in steps[:5] if isinstance(s, dict)]
-        if not head:
-            return 0.0
-        if all("role" in s for s in head):
-            return 0.0
-        if any("action" in s or "thought" in s for s in head):
-            if "environment" in payload or "info" in payload:
-                return 1.0
-            return 0.7
+
+        # Function-calling serialization: a chat history instead of a step list.
+        # `message_type` is SWE-agent's own marker, and requiring it keeps this
+        # from swallowing any generic chat dump that happens to have `role`.
+        history = payload.get("history")
+        if isinstance(history, list) and history:
+            head = [m for m in history[:10] if isinstance(m, dict)]
+            if head and any("role" in m for m in head):
+                if any(m.get("message_type") for m in head):
+                    return 0.9
+                return 0.3
         return 0.0
 
     # ------------------------------------------------------------------ parse
     @classmethod
     def parse(cls, payload: Any) -> Trajectory:
-        raw_steps = payload.get("trajectory") or []
+        raw_steps = payload.get("trajectory")
+        if isinstance(raw_steps, list) and raw_steps:
+            return cls._parse_traj(payload, raw_steps)
+        history = payload.get("history")
+        if isinstance(history, list) and history:
+            return cls._parse_history(payload, history)
+        return cls._parse_traj(payload, [])
+
+    @classmethod
+    def _parse_traj(cls, payload: Any, raw_steps: list) -> Trajectory:
         steps: list[AgentStep] = []
         open_file: str = ""
 
@@ -111,6 +170,203 @@ class SWEAgentAdapter(Adapter):
                 "model_name": info.get("model_name"),
             },
         )
+
+    # --------------------------------------------------- chat-history format
+    @classmethod
+    def _parse_history(cls, payload: Any, history: list) -> Trajectory:
+        """Parse the function-calling serialization: roles, not step objects.
+
+        Each ``assistant`` turn is one step, and the ``tool`` turn that answers it
+        supplies the observation, paired by ``tool_call_ids``.  Structured call
+        arguments are preferred over the redundant ``action`` string; the string
+        is only used when a turn has no ``tool_calls`` at all.
+        """
+        steps: list[AgentStep] = []
+        pending: dict[str, int] = {}
+        open_file = ""
+        system_prompt: str | None = None
+        problem: str | None = None
+
+        for message in history:
+            if not isinstance(message, dict):
+                continue
+            role = message.get("role")
+
+            if role == "system":
+                system_prompt = clean_output(message.get("content"))
+                continue
+
+            if role == "user":
+                # First user turn is the issue; later ones are nudges.
+                if problem is None:
+                    problem = clean_output(message.get("content"))
+                continue
+
+            if role == "assistant":
+                thought = (
+                    clean_output(message.get("thought") or message.get("content")) or None
+                )
+                calls = [c for c in (message.get("tool_calls") or []) if isinstance(c, dict)]
+                if calls:
+                    for call in calls:
+                        function = call.get("function") or {}
+                        name = str(function.get("name") or "unknown")
+                        args = cls._as_args(function.get("arguments"))
+                        step = cls._build_tool_step(len(steps), name, args, open_file, thought)
+                        open_file = cls._track_open_file(step, open_file)
+                        call_id = call.get("id")
+                        if call_id:
+                            pending[call_id] = step.idx
+                        steps.append(step)
+                    continue
+
+                action = str(message.get("action") or "")
+                if action.strip():
+                    step = cls._build_step(
+                        idx=len(steps),
+                        action=action,
+                        thought=thought,
+                        response=None,
+                        open_file=open_file,
+                        state={},
+                    )
+                    open_file = cls._track_open_file(step, open_file)
+                    steps.append(step)
+                elif thought:
+                    steps.append(
+                        AgentStep(
+                            idx=len(steps),
+                            kind=StepKind.THOUGHT,
+                            thought=thought,
+                            args={"thought": thought},
+                            raw_action=thought,
+                            raw_tool="think",
+                        )
+                    )
+                continue
+
+            if role == "tool":
+                observation = clean_output(message.get("content"))
+                ids = list(message.get("tool_call_ids") or ())
+                if not ids and message.get("tool_call_id"):
+                    ids = [message["tool_call_id"]]
+                for call_id in ids:
+                    target = pending.get(call_id)
+                    if target is None or target >= len(steps):
+                        continue
+                    step = steps[target]
+                    step.observation = observation
+                    if step.kind in ERROR_BEARING_KINDS:
+                        step.error_kind, step.error_fp = classify_error(observation)
+                        step.exit_code = extract_exit_code(observation)
+                hint = _OPEN_FILE_HINT.search(observation or "")
+                if hint:
+                    resolved = repo_relative(hint.group(1))
+                    if resolved and resolved.lower() != "n/a":
+                        open_file = resolved
+                continue
+
+        info = payload.get("info") or {}
+        return Trajectory(
+            instance_id=str(
+                payload.get("instance_id")
+                or info.get("instance_id")
+                or payload.get("environment")
+                or "unknown"
+            ),
+            framework=cls.name,
+            steps=steps,
+            resolved=payload.get("resolved", info.get("resolved")),
+            repo=info.get("repo") or payload.get("repo"),
+            problem_statement=problem,
+            model_patch=payload.get("model_patch") or info.get("model_patch"),
+            exit_status=payload.get("exit_status") or info.get("exit_status"),
+            meta={
+                "environment": payload.get("environment"),
+                "n_raw_steps": len(payload.get("history") or []),
+                "model_name": info.get("model_name"),
+                "serialization": "history",
+                "system_prompt": system_prompt,
+            },
+        )
+
+    @staticmethod
+    def _track_open_file(step: AgentStep, open_file: str) -> str:
+        """Follow the editor pointer, which `edit` depends on in both formats."""
+        if step.kind in (StepKind.READ, StepKind.EDIT):
+            path = step.args.get("path")
+            if path:
+                return str(path)
+        return open_file
+
+    @classmethod
+    def _build_tool_step(
+        cls,
+        idx: int,
+        name: str,
+        args: dict[str, Any],
+        open_file: str,
+        thought: str | None,
+    ) -> AgentStep:
+        """Map one structured ``tool_call`` (name + arguments) to a step."""
+        kind = _TOOL_KINDS.get(name, StepKind.OTHER)
+        step = AgentStep(idx=idx, kind=kind, raw_tool=name, thought=thought)
+
+        if kind is StepKind.SUBMIT:
+            step.args = {}
+            step.raw_action = name
+            return step
+
+        if kind is StepKind.SHELL:
+            command = str(args.get("command") or args.get("cmd") or "")
+            step.args = {"command": command}
+            step.raw_action = command
+            step.is_test_run = is_test_command(command)
+            return step
+
+        if kind is StepKind.READ:
+            path = repo_relative(args.get("path") or args.get("file_name"))
+            step.args = {"path": path, "verb": "view"}
+            step.raw_action = f"open {path}"
+            step.files_touched = (path,) if path else ()
+            return step
+
+        if kind is StepKind.SEARCH:
+            pattern = str(
+                args.get("file_name")
+                or args.get("search_term")
+                or args.get("pattern")
+                or args.get("query")
+                or ""
+            )
+            step.args = {"pattern": pattern, "verb": "search"}
+            step.raw_action = f"{name} {pattern}"
+            return step
+
+        if kind is StepKind.EDIT:
+            # `edit`/`insert` act on the open file; the arguments name no path.
+            path = repo_relative(args.get("path") or args.get("file_name")) or open_file
+            if name in ("create", "create_file"):
+                verb = "create"
+            elif name == "insert":
+                verb = "insert"
+            else:
+                verb = "str_replace"
+            step.args = {
+                "path": path,
+                "verb": verb,
+                "old_str": args.get("search") or args.get("old_str"),
+                "new_str": args.get("replace") or args.get("new_str") or args.get("text"),
+                "file_text": args.get("file_text"),
+                "insert_line": args.get("insert_line"),
+            }
+            step.raw_action = f"{verb} {path}"
+            step.files_touched = (path,) if path else ()
+            return step
+
+        step.args = args
+        step.raw_action = f"{name} {args}"
+        return step
 
     # ---------------------------------------------------------------- helpers
     @staticmethod

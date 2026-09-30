@@ -119,6 +119,33 @@ def test_environment_stuck_ignores_cd_prefixed_commands():
     assert EnvironmentStuckDetector().detect(make_trajectory(steps)) == []
 
 
+def test_environment_stuck_threshold_is_deliberately_conservative():
+    """Three failures, not two.
+
+    The shipped corpus contains only eight failing setup/install commands in 300
+    runs, so this rule is starved rather than mis-tuned.  Lowering the bar to two
+    would add a single unvalidated finding, and the one annotated
+    `environment_stuck` finding was judged invalid -- so the threshold is pinned
+    here to make any future loosening a deliberate, evidenced change.
+    """
+    observation = "ERROR: Could not find a version that satisfies the requirement foo"
+    two = [shell(i, "pip install foo", observation=observation) for i in range(2)]
+    assert EnvironmentStuckDetector().detect(make_trajectory(two)) == []
+
+    three = [shell(i, "pip install foo", observation=observation) for i in range(3)]
+    assert EnvironmentStuckDetector().detect(make_trajectory(three))
+
+
+def test_timeout_wall_needs_a_cluster_not_a_single_slow_run():
+    """One timeout is usually a legitimately slow test run, not a stuck sandbox."""
+    timeout = "Command timed out after 120 seconds"
+    single = [shell(0, "pytest tests/", observation=timeout), submit(1)]
+    assert EnvironmentStuckDetector().detect(make_trajectory(single)) == []
+
+    wall = [shell(i, "pytest tests/", observation=timeout) for i in range(3)]
+    assert EnvironmentStuckDetector().detect(make_trajectory(wall))
+
+
 # --------------------------------------------------------------------------
 # Verification
 # --------------------------------------------------------------------------
@@ -297,7 +324,11 @@ def test_core_tier_is_non_empty_and_validated():
     core = [name for name, cls in REGISTRY.items() if cls.tier is Tier.CORE]
     assert core, "nothing would be reported by default"
     assert "termination_anomaly" in core
-    assert "redundant_read" in core
+    # `redundant_read` scored 4/4 in a round whose human verdicts are not shipped,
+    # so no reproducible sample supports its precision.  A core tier asserts
+    # measured precision, so it stays experimental until a shipped round backs it;
+    # tests/test_readme_tables.py enforces that reading of the README.
+    assert "redundant_read" not in core
     assert "execution_loop" not in core
 
 

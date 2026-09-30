@@ -3,6 +3,30 @@
 These failures look like progress in the logs -- the agent is running commands --
 but nothing it does can affect the outcome, because the environment it needs to
 run the tests in never becomes usable.
+
+Why the thresholds are left conservative
+----------------------------------------
+This rule fires almost never on the shipped SWE-rebench/OpenHands corpus, and the
+reason is worth recording so it is not mistaken for a bug:
+
+======================================================  =====
+measured on the 300-trajectory sample
+======================================================  =====
+failing setup/install commands, whole corpus                8
+trajectories containing any of them                         6
+timeout steps, whole corpus                                 4
+trajectories with more than one timeout                     0
+findings at ``min_failures=3``                              0
+findings at ``min_failures=2``                              1
+======================================================  =====
+
+The environments in this dataset are pre-built containers, so agents rarely have
+to fight them.  Loosening the threshold to 2 buys exactly one extra finding, and
+the single annotated ``environment_stuck`` finding in the label set was judged
+*invalid*, so there is no evidence that the looser rule would be precise.  The
+thresholds therefore stay where they are: a rule that stays quiet on data that
+does not contain the phenomenon is behaving correctly, and manufacturing volume
+by lowering the bar would only add unvalidated claims.
 """
 
 from __future__ import annotations
