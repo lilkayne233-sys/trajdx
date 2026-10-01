@@ -18,6 +18,11 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--review-dir", type=Path, default=Path("data/reports/review_v2"))
     ap.add_argument("--dest", type=Path, default=Path("data/labels/reviewed_ai_identity_v2.jsonl"))
+    ap.add_argument("--raw", type=Path, default=Path("data/raw/openhands_sample.jsonl"))
+    ap.add_argument("--adopt", type=Path, action="append", default=[],
+                    help="prior reviewed label file(s); verdicts are carried over ONLY for "
+                         "finding ids whose run_id, detector and finding_signature are all "
+                         "identical, i.e. the current code emits the byte-same finding")
     args = ap.parse_args()
 
     root = args.review_dir
@@ -29,10 +34,33 @@ def main() -> int:
     verdicts = []
     for name in sorted(root.glob('verdicts_*.jsonl')):
         verdicts.extend(json.loads(line) for line in name.read_text(encoding='utf-8-sig').splitlines() if line.strip())
+
+    adopted = []
+    if args.adopt:
+        fresh_ids = {row['finding_id'] for row in verdicts}
+        prior: dict[str, dict] = {}
+        for path in args.adopt:
+            for line in path.read_text(encoding='utf-8-sig').splitlines():
+                if line.strip():
+                    row = json.loads(line)
+                    prior[row['finding_id']] = row
+        for fid, row in expected.items():
+            if fid in fresh_ids:
+                continue
+            old = prior.get(fid)
+            if old is None:
+                continue
+            if (old['run_id'] != row['run_id']
+                    or old['finding_signature'] != row['finding_signature']
+                    or old['detector'] != row['detector']):
+                raise ValueError(f'Adopted label {fid} does not match the live finding')
+            adopted.append({**old, 'adopted_verdict': True})
+        verdicts.extend(adopted)
+
     counts = Counter(row['finding_id'] for row in verdicts)
     if set(counts) != set(expected) or any(n != 1 for n in counts.values()):
         raise ValueError('Review coverage missing, extra or duplicate IDs')
-    live, duplicates = live_findings(Path('data/raw/openhands_sample.jsonl'))
+    live, duplicates = live_findings(args.raw)
     if set(live) != set(expected) or duplicates:
         raise ValueError('Live claims do not equal frozen claims')
     for row in verdicts:
@@ -63,7 +91,9 @@ def main() -> int:
     for row in verdicts:
         by_detector[row['detector']][row['verdict']] += 1
         by_pattern[row['detector']+'/'+row['pattern']][row['verdict']] += 1
-    report = {'finding_count':len(verdicts),'by_detector':dict(by_detector),'by_pattern':dict(by_pattern),
+    report = {'finding_count':len(verdicts),'fresh_verdicts':len(verdicts)-len(adopted),
+              'adopted_same_signature':len(adopted),
+              'by_detector':dict(by_detector),'by_pattern':dict(by_pattern),
               'reviewer_type':'ai','human_verified':False,'code_sha256':current_sha,'raw_sha256':manifest['raw_sha256'],
               'caveat':'Independent AI context review, not human ground truth or independent held-out evaluation. No old labels reused; task outcomes excluded from review packets.'}
     (root/'review_summary.json').write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding='utf-8')

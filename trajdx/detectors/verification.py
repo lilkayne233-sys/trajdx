@@ -97,28 +97,47 @@ def _invoked_script_paths(command: str | None) -> set[str]:
     return paths
 
 
-def agent_written_scripts(trajectory: Trajectory) -> set[str]:
-    """Scratch scripts the agent itself wrote earlier in this run.
+def created_scripts(trajectory: Trajectory) -> set[str]:
+    """Script files (any name) this trajectory created with a successful edit.
 
-    The verification gap's top false positive was exactly this shape: the agent
-    writes ``reproduce_issue.py`` and runs it after every edit, which *is*
-    verification -- but ``is_test_command`` only credits ``test_*.py`` and the
-    pytest family, so the run looked unverified.  Only scratch-named scripts
-    count, and only ones this trajectory actually created, so running a script
-    that shipped with the repo is never mistaken for self-checking.
+    The v3 review's three remaining false positives were all the same shape:
+    the agent writes ``edge_cases.py`` / ``original_repro.py`` /
+    ``edge_case_tests.py`` as verification tooling and runs it, but the names
+    match no scratch pattern, so the *creation* counted as a source edit and
+    made the run look unverified after its last real change.  The reviewer's
+    ruling is the definition now: a file the agent created this run as a script
+    is tooling, not library source, whatever it is called.
     """
     out: set[str] = set()
     for step in trajectory.steps:
         if step.kind is not StepKind.EDIT or edit_was_rejected(step):
+            continue
+        created = str(step.args.get("verb") or "") == "create" or (
+            step.observation or ""
+        ).lstrip().startswith("File created successfully")
+        if not created:
             continue
         files = step.files_touched or (
             (step.args["path"],) if step.args.get("path") else ()
         )
         for f in files:
             p = repo_relative(f)
-            if p and _SCRIPT_EXT.search(p) and is_test_or_scratch(p):
+            if p and _SCRIPT_EXT.search(p):
                 out.add(p)
     return out
+
+
+def agent_written_scripts(trajectory: Trajectory) -> set[str]:
+    """Scripts the agent itself wrote earlier in this run, by any name.
+
+    The verification gap's top false positive was exactly this shape: the agent
+    writes ``reproduce_issue.py`` and runs it after every edit, which *is*
+    verification -- but ``is_test_command`` only credits ``test_*.py`` and the
+    pytest family, so the run looked unverified.  Membership is decided by
+    provenance (created by an edit this run), not by name, so running a script
+    that shipped with the repo is never mistaken for self-checking.
+    """
+    return created_scripts(trajectory)
 
 
 def verification_steps(trajectory: Trajectory) -> list[int]:
@@ -147,13 +166,17 @@ def verification_steps(trajectory: Trajectory) -> list[int]:
 
 def source_edit_events(trajectory: Trajectory) -> list[int]:
     """All successful source edit events, without losing repeated-edit timing."""
+    created = created_scripts(trajectory)
     out: list[int] = []
     for idx, step in enumerate(trajectory.steps):
         if step.kind is not StepKind.EDIT or edit_was_rejected(step):
             continue
         files = step.files_touched or ((step.args["path"],) if step.args.get("path") else ())
         # Unknown paths are counted conservatively.
-        if files and all(is_test_or_scratch(f) or is_doc_or_config(f) for f in files):
+        if files and all(
+            is_test_or_scratch(f) or is_doc_or_config(f) or repo_relative(f) in created
+            for f in files
+        ):
             continue
         out.append(idx)
     return out
@@ -281,8 +304,9 @@ class WeakVerificationDetector(Detector):
     failure: trajectories with 3 or more *source* edits and fewer than 0.75 test
     executions per edit failed 73% of the time, against a 50% base rate.
 
-    The edit count deliberately excludes tests and scratch scripts, and counts
-    *sessions* rather than raw edits: consecutive unverified rewrites of the
+    The edit count deliberately excludes tests, scratch scripts, and any script
+    the agent created this run regardless of name (see ``created_scripts``), and
+    counts *sessions* rather than raw edits: consecutive unverified rewrites of the
     same region are one piece of work, not N edits (see ``source_edits``).  An
     earlier version counted every file write, and it reported an 81% failure
     rate from a seemingly much stronger signal -- which turned out to be an

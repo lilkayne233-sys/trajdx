@@ -5,8 +5,11 @@ import json
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-REVIEWED = ROOT / "data" / "labels" / "reviewed_ai_identity_v3.jsonl"
-SUMMARY = ROOT / "data" / "reports" / "review_v3" / "review_summary.json"
+REVIEWED = ROOT / "data" / "labels" / "reviewed_ai_identity_v4.jsonl"
+SUMMARY = ROOT / "data" / "reports" / "review_v4" / "review_summary.json"
+# The review round is defined over the 700-trajectory merged sample; without the
+# gitignored raw file the gate half of this module cannot run.
+RAW = ROOT / "data" / "raw" / "openhands_sample_v4.jsonl"
 
 
 def _rows() -> list[dict]:
@@ -32,6 +35,9 @@ def test_reviewed_labels_are_versioned_and_ai_only():
         assert row["reason"].strip() and row["evidence_steps"]
         # Evidence indices must be ints so a reader can actually jump to the step.
         assert all(isinstance(step, int) for step in row["evidence_steps"])
+        # Adopted rows must say so; fresh rows must not claim adoption.
+        if row.get("adopted_verdict"):
+            assert row["adopted_verdict"] is True
 
 
 def test_reviewed_labels_cover_every_detector_that_fires():
@@ -43,11 +49,13 @@ def test_reviewed_labels_cover_every_detector_that_fires():
         "execution_loop",
         "redundant_read",
         "edit_error",
+        "weak_verification",
     }
     if SUMMARY.exists():
         summary = json.loads(SUMMARY.read_text(encoding="utf-8"))
         assert summary["finding_count"] == len(rows)
         assert summary["human_verified"] is False
+        assert summary["adopted_same_signature"] + summary["fresh_verdicts"] == len(rows)
 
 
 def test_strict_gate_accepts_the_reviewed_labels_but_not_unversioned_ones():
@@ -55,19 +63,19 @@ def test_strict_gate_accepts_the_reviewed_labels_but_not_unversioned_ones():
     import subprocess
     import sys
 
-    raw = ROOT / "data" / "raw" / "openhands_sample.jsonl"
-    if not raw.exists():
+    if not RAW.exists():
         import pytest
 
         pytest.skip("raw trajectories are gitignored")
 
     passing = subprocess.run(
-        [sys.executable, "scripts/check_regression.py", "--labels",
+        [sys.executable, "scripts/check_regression.py", "--raw",
+         str(RAW.relative_to(ROOT)), "--labels",
          str(REVIEWED.relative_to(ROOT))],
         cwd=ROOT, capture_output=True, text=True,
     )
     assert passing.returncode == 0, passing.stdout + passing.stderr
-    assert "100.0%" in passing.stdout
+    assert "98.8%" in passing.stdout
 
     refusing = subprocess.run(
         [sys.executable, "scripts/check_regression.py", "--labels",

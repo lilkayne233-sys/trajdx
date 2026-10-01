@@ -38,14 +38,15 @@ def read(idx: int, path: str, observation: str = "content", **kw) -> AgentStep:
     )
 
 
-def edit(idx: int, path: str, payload: str = "x", verb: str = "str_replace", **kw) -> AgentStep:
+def edit(idx: int, path: str, payload: str = "x", verb: str = "str_replace",
+         observation: str = "File updated.", **kw) -> AgentStep:
     step = AgentStep(
         idx=idx,
         kind=StepKind.EDIT,
         args={"path": path, "verb": verb, "new_str": payload},
         raw_action=f"{verb} {path}",
         raw_tool="str_replace_editor",
-        observation="File updated.",
+        observation=observation,
         files_touched=(path,),
         **kw,
     )

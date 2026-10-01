@@ -400,7 +400,8 @@ def test_running_agent_written_repro_script_counts_as_verification():
     agent itself wrote earlier in the run now counts.
     """
     steps = [
-        edit(0, "reproduce_issue.py", payload="import pkg.core"),
+        edit(0, "reproduce_issue.py", verb="create",
+             observation="File created successfully at: /workspace/reproduce_issue.py"),
         edit(1, "src/pkg/core.py", payload="v1"),
         shell(2, "python reproduce_issue.py", observation="ValueError: bug"),
         edit(3, "src/pkg/core.py", payload="v2"),
@@ -421,10 +422,51 @@ def test_running_a_preexisting_script_is_not_verification():
     assert [f for f in findings if f.detail["pattern"] == "never_verified"]
 
 
+def test_verification_script_with_unscratch_name_is_not_a_source_edit():
+    """v3 invalids 2+3 (jsonargparse-560, pandas-61158): scripts of any name.
+
+    The agent created ``original_repro.py`` / ``edge_case_tests.py`` -- names no
+    scratch pattern matches -- and ran them.  Creation is tooling, not library
+    churn, and running the script is verification; neither stale_verification
+    nor an inflated edit count may survive.
+    """
+    steps = [
+        edit(0, "src/pkg/_typehints.py", payload="v1"),
+        shell(1, "python -m pytest tests/", observation="1 passed", is_test_run=True),
+        edit(2, "edge_case_tests.py", verb="create",
+             observation="File created successfully at: /workspace/edge_case_tests.py"),
+        shell(3, "python edge_case_tests.py", observation="all passed"),
+        submit(4),
+    ]
+    traj = make_trajectory(steps)
+    assert source_edit_events(traj) == [0], "the script creation is not a source edit"
+    assert VerificationGapDetector().detect(traj) == []
+
+
+def test_script_creation_after_the_last_verification_closes_nothing():
+    """v3 invalid 1 (pyupgrade-195): a created-but-unrun script is not churn.
+
+    The last real source edit was verified; the agent then created
+    ``edge_cases.py`` and never got to run it.  That creation must not reopen
+    the verification gap.
+    """
+    steps = [
+        edit(0, "src/pkg/pyupgrade.py", payload="v1"),
+        shell(1, "python -m pytest tests/", observation="1 passed", is_test_run=True),
+        edit(2, "edge_cases.py", verb="create",
+             observation="File created successfully at: /workspace/edge_cases.py"),
+        submit(3),
+    ]
+    traj = make_trajectory(steps)
+    assert source_edit_events(traj) == [0]
+    assert VerificationGapDetector().detect(traj) == []
+
+
 def test_weak_verification_credits_agent_script_runs():
     """Three source edits verified by three self-written-script runs: healthy."""
     steps = [
-        edit(0, "repro_probe.py", payload="import pkg"),
+        edit(0, "repro_probe.py", verb="create",
+             observation="File created successfully at: /workspace/repro_probe.py"),
         edit(1, "src/pkg/core.py", payload="v1"),
         shell(2, "python repro_probe.py", observation="ran"),
         edit(3, "src/pkg/other.py", payload="v1"),

@@ -22,11 +22,14 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 RAW = ROOT / "data" / "raw" / "openhands_sample.jsonl"
-
-V3_LABELS = "data/labels/labelled_v3_*.jsonl"
+RAW_V4 = ROOT / "data" / "raw" / "openhands_sample_v4.jsonl"
+V4_LABELS = "data/labels/reviewed_ai_identity_v4.jsonl"
 
 
 needs_raw = pytest.mark.skipif(not RAW.exists(), reason="raw trajectories are gitignored")
+needs_raw_v4 = pytest.mark.skipif(
+    not (RAW.exists() and RAW_V4.exists()), reason="raw trajectories are gitignored"
+)
 
 
 def _run(argv: list[str]) -> str:
@@ -49,7 +52,7 @@ def _readme(*names: str) -> str:
 # --------------------------------------------------------------------------
 
 
-@needs_raw
+@needs_raw_v4
 def test_readme_detector_table_matches_evaluate():
     """Every generated row must appear verbatim in both READMEs."""
     generated = [
@@ -57,8 +60,9 @@ def test_readme_detector_table_matches_evaluate():
         for line in _run(
             [
                 "scripts/evaluate.py",
-                "--labels", V3_LABELS,
-                "--markdown", "--allow-legacy", "--allow-legacy",
+                "--raw", "data/raw/openhands_sample_v4.jsonl",
+                "--labels", V4_LABELS,
+                "--markdown",
             ]
         ).splitlines()
         if line.strip()
@@ -78,7 +82,7 @@ def test_readme_detector_table_matches_evaluate():
         )
 
 
-@needs_raw
+@needs_raw_v4
 def test_readme_precision_claims_match_sample_size():
     """The prose claims must follow from the table that is actually shipped.
 
@@ -88,8 +92,9 @@ def test_readme_precision_claims_match_sample_size():
     output = _run(
         [
             "scripts/evaluate.py",
-            "--labels", V3_LABELS,
-            "--markdown", "--allow-legacy",
+            "--raw", "data/raw/openhands_sample_v4.jsonl",
+            "--labels", V4_LABELS,
+            "--markdown",
         ]
     )
     rows = re.findall(r"^\| `(\w+)` \| (\w+) \| ([\d.]+%|—) \| (\d+) \|$", output, re.M)
