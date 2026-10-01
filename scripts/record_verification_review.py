@@ -4,7 +4,10 @@ Decisions are enumerated per packet from evidence read directly (post-edit comma
 sequences, edited paths, observations). No legacy label and no task outcome is used.
 """
 import json
+import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 root = Path('data/reports/review_v2')
 VERIFICATION = {

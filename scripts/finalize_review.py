@@ -4,8 +4,11 @@ This assembles decisions, never generates verdicts or reuses legacy labels.
 """
 import hashlib
 import json
+import sys
 from collections import Counter, defaultdict
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from scripts.evaluate import live_findings
 
@@ -39,9 +42,16 @@ def main():
         row['raw_sha256'] = manifest['raw_sha256']
     verdicts.sort(key=lambda r:(r['raw_record'],r['detector'],r['finding_id']))
     destination = Path('data/labels/reviewed_ai_identity_v2.jsonl')
+    body = ''.join(json.dumps(row, ensure_ascii=False) + '\n' for row in verdicts)
     if destination.exists():
-        raise ValueError('Refusing to overwrite existing independent review')
-    destination.write_text(''.join(json.dumps(row,ensure_ascii=False)+'\n' for row in verdicts),encoding='utf-8')
+        existing = destination.read_text(encoding='utf-8-sig')
+        if existing != body:
+            raise ValueError(
+                'Refusing to overwrite an existing independent review with different '
+                'verdicts: re-review is a human decision, not a script side effect'
+            )
+        print('existing review is identical; nothing to rewrite')
+    destination.write_text(body, encoding='utf-8')
     by_detector = defaultdict(Counter)
     by_pattern = defaultdict(Counter)
     for row in verdicts:

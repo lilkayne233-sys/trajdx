@@ -4,6 +4,9 @@ import json
 from collections import Counter
 from pathlib import Path
 import subprocess
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from trajdx.adapters import iter_file
 from trajdx.detectors import detect_all
