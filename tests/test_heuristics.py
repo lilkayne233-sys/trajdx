@@ -128,12 +128,21 @@ def test_is_install_command_is_narrower_than_setup():
         ("repro.py", True),
         ("final_verification.py", True),
         ("debug_coord_names.py", True),
+        ("check_issue.py", True),
+        ("check-fix.sh", True),
         ("tests/test_core.py", True),
         ("src/pkg/tests/test_x.py", True),
         ("conftest.py", True),
         ("src/pkg/core.py", False),
         ("django/db/models/query.py", False),
         ("setup.py", False),
+        # Reviewed FP: `src/zope/security/checker.py` and
+        # `ignite/handlers/checkpoint.py` are real library source; the bare
+        # `check` prefix used to classify both as scratch, which made
+        # `patch_ignores_source` fire on patches that did touch source.
+        ("src/zope/security/checker.py", False),
+        ("ignite/handlers/checkpoint.py", False),
+        ("checks.py", False),
     ],
 )
 def test_is_test_or_scratch(path, expected):

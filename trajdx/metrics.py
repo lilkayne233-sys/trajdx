@@ -72,6 +72,33 @@ def test_run_ratio(trajectory: Trajectory) -> float:
     return test_runs(trajectory) / max(1, trajectory.n_steps)
 
 
+def novel_observation_ratio(trajectory: Trajectory) -> float:
+    """Share of steps that produced a never-before-seen observation.
+
+    Computed straight off the observation identity hashes, with no detector in
+    the loop.  A run stuck in a loop keeps re-deriving observations it already
+    had, so its novelty share collapses; a healthy run -- even a long one --
+    keeps learning something per step.  Steps with no observation at all are
+    excluded: a blank output carries no information by construction.
+
+    This is the replacement the Wasted Step Ratio never was: WSR aggregates
+    detector output (and inherits every detector's blind spots), while this
+    metric reads the one signal every step carries anyway.
+    """
+    seen: set[str] = set()
+    novel = 0
+    total = 0
+    for step in trajectory.steps:
+        key = step.observation_key
+        if not key or key == "empty":
+            continue
+        total += 1
+        if key not in seen:
+            novel += 1
+            seen.add(key)
+    return novel / total if total else 0.0
+
+
 @dataclass
 class WasteReport:
     """Per-trajectory waste accounting."""
@@ -93,6 +120,7 @@ class WasteReport:
     test_runs: int = 0
     tests_per_source_edit: float = 0.0
     test_run_ratio: float = 0.0
+    novel_observation_ratio: float = 0.0
 
     def to_dict(self, with_findings: bool = True) -> dict[str, Any]:
         out: dict[str, Any] = {
@@ -110,6 +138,7 @@ class WasteReport:
             "test_runs": self.test_runs,
             "tests_per_source_edit": round(self.tests_per_source_edit, 4),
             "test_run_ratio": round(self.test_run_ratio, 4),
+            "novel_observation_ratio": round(self.novel_observation_ratio, 4),
         }
         if with_findings:
             out["findings"] = [f.to_dict() for f in self.findings]
@@ -167,6 +196,7 @@ def wasted_step_ratio(
         test_runs=test_runs(trajectory),
         tests_per_source_edit=tests_per_source_edit(trajectory),
         test_run_ratio=test_run_ratio(trajectory),
+        novel_observation_ratio=novel_observation_ratio(trajectory),
     )
 
 
@@ -197,6 +227,7 @@ class OutcomeStats:
     mean_test_runs: float = 0.0
     mean_tests_per_source_edit: float = 0.0
     mean_test_run_ratio: float = 0.0
+    mean_novel_observation_ratio: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -211,6 +242,7 @@ class OutcomeStats:
             "mean_test_runs": round(self.mean_test_runs, 2),
             "mean_tests_per_source_edit": round(self.mean_tests_per_source_edit, 2),
             "mean_test_run_ratio": round(self.mean_test_run_ratio, 4),
+            "mean_novel_observation_ratio": round(self.mean_novel_observation_ratio, 4),
         }
 
 
@@ -277,6 +309,7 @@ def _outcome_stats(label: str, reports: Sequence[WasteReport]) -> OutcomeStats:
         mean_test_runs=_mean(r.test_runs for r in reports),
         mean_tests_per_source_edit=_mean(r.tests_per_source_edit for r in reports),
         mean_test_run_ratio=_mean(r.test_run_ratio for r in reports),
+        mean_novel_observation_ratio=_mean(r.novel_observation_ratio for r in reports),
     )
 
 

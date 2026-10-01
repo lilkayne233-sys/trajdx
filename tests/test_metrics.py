@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from trajdx import metrics
 from trajdx.metrics import aggregate, wasted_step_ratio
-from tests.conftest import edit, make_trajectory, read, shell, submit
+from tests.conftest import edit, make_trajectory, read, shell, submit, thought
 
 
 def _test_shell(idx: int, command: str = "pytest tests/", **kw):
@@ -70,10 +70,34 @@ def test_tests_per_source_edit_ratio():
 
 def test_ratios_are_zero_safe():
     """A run that edits nothing and runs no tests must not divide by zero."""
-    trajectory = make_trajectory([read(0, "README.md"), submit(1)])
+    # The read returns blank output on purpose: blank observations carry no
+    # information, so the novelty ratio has no denominator here either.
+    trajectory = make_trajectory([read(0, "README.md", observation=""), submit(1)])
     assert metrics.source_edits(trajectory) == 0
     assert metrics.tests_per_source_edit(trajectory) == 0.0
     assert metrics.test_run_ratio(trajectory) == 0.0
+    assert metrics.novel_observation_ratio(trajectory) == 0.0
+
+
+def test_novel_observation_ratio_counts_first_occurrences_only():
+    """Repeated identical outputs are not new information; blank output is not counted."""
+    trajectory = make_trajectory(
+        [
+            shell(0, "ls src/", observation="a.py"),
+            shell(1, "ls src/", observation="a.py"),  # identical result
+            shell(2, "ls src/", observation="b.py"),  # something changed
+            thought(3, "hmm"),                        # blank observation
+        ]
+    )
+    # 2 novel of 3 informative observations; the thought has no observation.
+    assert metrics.novel_observation_ratio(trajectory) == 2 / 3
+
+
+def test_novel_observation_ratio_is_one_for_a_first_pass():
+    trajectory = make_trajectory(
+        [shell(0, "ls", observation="x"), shell(1, "cat a", observation="y"), submit(2)]
+    )
+    assert metrics.novel_observation_ratio(trajectory) == 1.0
 
 
 def test_waste_report_carries_process_shape():

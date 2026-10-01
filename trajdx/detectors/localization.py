@@ -24,7 +24,11 @@ from trajdx.detectors.base import (
     Tier,
     register_detector,
 )
-from trajdx.heuristics import is_doc_or_config, is_revert_command, repo_relative
+from trajdx.heuristics import (
+    is_doc_or_config,
+    is_revert_command,
+    repo_relative,
+)
 from trajdx.schema import StepKind, Trajectory
 
 _EXPLORE_KINDS = (StepKind.READ, StepKind.SEARCH)
@@ -34,11 +38,14 @@ _EXPLORE_KINDS = (StepKind.READ, StepKind.SEARCH)
 class BlindSearchDetector(Detector):
     """Flags long stretches of exploration that never turn into an edit.
 
-    Annotators mostly rejected this: a ten-step inspection run that walks a
+    Length alone made this rule unusable: a ten-step inspection run that walks a
     module, its tests and its callers looks identical to flailing from the
-    outside, and the rule cannot tell them apart (0/1 valid on the held-out
-    sample).  It stays available because the signal is real when it fires, but
-    it is not something to put in front of a user by default.
+    outside, and annotators rejected every finding it produced (0/1 valid on
+    the held-out sample).  The trigger therefore carries a *convergence*
+    condition: a streak only counts as blind when the files it inspected have
+    no overlap with the files the agent eventually edited or patched.  Reading
+    that converges on the code the agent ends up working on is investigation;
+    reading that never touches the eventual work area is what this rule flags.
     """
 
     name: ClassVar[str] = "blind_search"
@@ -56,26 +63,33 @@ class BlindSearchDetector(Detector):
         self.warmup = warmup
 
     def detect(self, trajectory: Trajectory) -> list[Finding]:
-        return self._read_without_edit(trajectory)
+        targets = {
+            repo_relative(f)
+            for step in trajectory.steps
+            if step.kind is StepKind.EDIT
+            for f in step.files_touched
+        }
+        targets |= {repo_relative(p) for p in trajectory.patch_files}
+        targets.discard("")
+        return self._read_without_edit(trajectory, targets)
 
     # -------------------------------------------------- exploration streaks
-    def _read_without_edit(self, trajectory: Trajectory) -> list[Finding]:
+    def _read_without_edit(self, trajectory: Trajectory, targets: set[str]) -> list[Finding]:
         """A run of locate-only steps longer than the exploration budget.
 
         Some exploration is mandatory -- you cannot fix what you have not found --
         so only the steps beyond ``explore_budget`` are charged as wasted.
 
-        Two kinds of step are excluded from a streak outright: the opening
-        ``warmup`` steps, and reads of documentation or project configuration.
-        Neither is an attempt to locate the defect, so neither belongs in a
-        measure of how long the agent spent failing to.
+        Three kinds of step are excluded from a streak outright: the opening
+        ``warmup`` steps, reads of documentation or project configuration, and
+        -- at flush time -- any streak whose inspected files overlap the files
+        the agent eventually worked on.  None of these is a failed search.
         """
         findings: list[Finding] = []
         run: list[int] = []
 
         def flush() -> None:
             if len(run) >= self.min_run:
-                wasted = tuple(run[self.explore_budget:])
                 files = sorted(
                     {
                         f
@@ -83,6 +97,13 @@ class BlindSearchDetector(Detector):
                         for f in trajectory.steps[i].files_touched
                     }
                 )
+                # Convergence check: if any inspected file is one the agent
+                # later edited or patched, the search found its target and the
+                # streak was investigation, not flailing.
+                if {repo_relative(f) for f in files} & targets:
+                    run.clear()
+                    return
+                wasted = tuple(run[self.explore_budget:])
                 findings.append(
                     Finding(
                         detector=self.name,

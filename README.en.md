@@ -1,21 +1,38 @@
 # trajdx
 
-**Step-level failure diagnosis for code-agent trajectories.**
+**Autopsy for failed code-agent runs: which step went wrong, and why.**
 
 Language: [中文](README.md) · [English](README.en.md)
 
-SWE-bench-style evaluation gives an agent one bit per task — resolved or not. That
-score tells you *that* an agent failed, never *where* or *why*. `trajdx` turns raw
-agent logs into a normalised event sequence, runs pure-Python rule detectors over
-that sequence, and reports the specific step ranges where an agent looped, searched
-blindly, or stopped verifying its own work.
+## What it is, in one paragraph
 
-No LLM in the detection path. No network. No Docker. Detection runs in ~3 ms per
-trajectory.
+SWE-bench-style evaluation gives an agent one bit per task — resolved or not. When it fails, nothing tells you *which step* went off the rails. `trajdx` fills that gap: it reads raw agent logs and uses pure-Python rules to pinpoint concrete problems — "repeated the same command across steps 34–50", "never verified its own edits" — with the exact step ranges.
 
----
+- **No LLM** in the detection path. No network. No Docker.
+- ~3 ms per trajectory.
+- Reads OpenHands and SWE-agent logs.
 
-## What it does
+Current status: **all tests pass (293), the pipeline works; of the 9 rules, `termination_anomaly` (core) and 4 experimental rules fired with zero false positives in the current review round, `verification_gap` sits at 72.7%, and `blind_search` / `weak_verification` / `environment_stuck` produced no hits on this corpus at all (details below). Never read a single experimental finding as a conclusion.**
+
+## Quickstart
+
+```bash
+pip install -e ".[dev]"
+pytest -q                                   # 293 tests
+
+python -m trajdx.cli detectors              # what rules exist
+python -m trajdx.cli adapters               # what log formats are supported
+python -m trajdx.cli replay data/raw/openhands_sample.jsonl --index 0
+python -m trajdx.cli diagnose data/raw/openhands_sample.jsonl
+python -m trajdx.cli export data/raw/openhands_sample.jsonl --out data/reports/diag.jsonl
+python -m trajdx.cli findings data/raw/openhands_sample.jsonl --out data/labels/to_label.jsonl
+```
+
+> `data/raw/` is gitignored (~81 MB) and absent from a bare clone; run
+> `python scripts/fetch_trajectories.py` first, or commands that touch raw
+> trajectories — and some tests — will be skipped.
+
+## How it works
 
 | Stage | Module | Output |
 |---|---|---|
@@ -25,48 +42,35 @@ trajectory.
 | Quantify waste | `trajdx.metrics` | Wasted Step Ratio, per-category attribution |
 | Report | `trajdx.report`, `trajdx.cli` | replay / diagnose / export / findings |
 
-One `AgentStep` is a decision–action–observation triple. Each step carries three
-identity keys:
+A trajectory becomes a sequence of steps; each step is a decision–action–observation triple carrying three identity keys:
 
-- `action_key` — what the agent *meant* to do, with volatile tokens (paths, ids,
-  line numbers) scrubbed, so `pytest tests/test_x.py` and `pytest tests/test_y.py`
-  collapse together.
-- `exact_key` — the literal action including its payload, so two edits to the same
-  file are only "the same" if the replacement text matches too.
-- `observation_key` — an identity for the *result*, hashed over the whole cleaned
-  observation body.
+- `action_key` — what the agent *meant* to do. Volatile tokens (paths, ids, line numbers) are scrubbed, so `pytest tests/test_x.py` and `pytest tests/test_y.py` collapse together.
+- `exact_key` — the literal action including its payload. Two edits to the same file are only "the same" if the replacement text matches too.
+- `observation_key` — a hash of the *result*.
 
-The gap between `action_key` and `exact_key` is what makes loop detection honest:
-repeating an action is not a failure if the agent changed its input in between.
+Why the split? Because **repeating an action is not automatically a failure**: repeating it after changing the input is usually legitimate debugging. The gap between `action_key` and `exact_key` is how loop detection tells the two apart — that is what keeps the rules from crying wolf.
 
----
+## The rules: which ones can you trust?
 
-## Quickstart
+| Rule | What it detects | Reliability today (v3 review round) |
+|---|---|---|
+| `termination_anomaly` | bad endings: no submit, iteration cap, patch ignoring source | **core, 38/38 valid**, and the sharpest resolved/unresolved signal |
+| `edit_error` | consecutive edit-tool rejections (the agent fighting its editor) | **6/6 valid** (new rule) |
+| `redundant_read` | reading the same content repeatedly | **4/4 valid** |
+| `execution_loop` | repeated actions, repeated errors, discard-and-reapply cycles | **3/3 valid** (the tightened `exact` pattern rarely fires) |
+| `verification_gap` | no verification after the final change | 8/11 (72.7%) |
+| `localization_failure` | edited the wrong files (vs. gold patch) | backed by external ground truth (second-best discriminator), not annotation-validatable, stays experimental |
+| `blind_search` | blind search | zero hits on this corpus since the convergence condition was added — it no longer cries wolf, but it has no samples yet either |
+| `weak_verification` | many edits, little testing | zero hits on this corpus since edit-session counting was introduced, same situation |
+| `environment_stuck` | repeatedly failing setup/install commands | **dormant on this corpus**: 2 hits across 4,096 real runs (0.05%); this failure mode barely exists in pre-built containers |
 
-```bash
-python -m trajdx.cli detectors                       # what rules exist
-python -m trajdx.cli adapters                        # what log formats are supported
-python -m trajdx.cli replay data/raw/openhands_sample.jsonl --index 0
-python -m trajdx.cli diagnose data/raw/openhands_sample.jsonl
-python -m trajdx.cli export data/raw/openhands_sample.jsonl --out data/reports/diag.jsonl
-python -m trajdx.cli findings data/raw/openhands_sample.jsonl --out data/labels/to_label.jsonl
-```
+`replay` / `findings` exclude experimental rules by default; use `--tier all` when you want volume for aggregate analysis.
 
-Install for development:
+The three tables below are the evidence behind that "reliability today" column. All of them reproduce from scripts.
 
-```bash
-pip install -e ".[dev]"
-pytest -q
-```
+### Table 1: historical annotation precision (`--allow-legacy` comparison)
 
----
-
-## Detectors and measured precision
-
-Rules were built against 300 real OpenHands trajectories (150 resolved / 150
-unresolved) and calibrated with LLM-pre-labelled findings reviewed by hand across
-several annotation rounds. The table below is **not hand-written**: it is emitted
-by the command shown, and reproduces exactly.
+Generated by the command shown, not hand-written; the test suite checks both READMEs against the script output verbatim.
 
 ```bash
 python scripts/evaluate.py --labels "data/labels/labelled_v3_*.jsonl" --markdown --allow-legacy
@@ -76,186 +80,113 @@ python scripts/evaluate.py --labels "data/labels/labelled_v3_*.jsonl" --markdown
 |---|---|---|---|
 | `execution_loop` | experimental | 100.0% | 1 |
 | `termination_anomaly` | core | 95.5% | 22 |
-| `weak_verification` | experimental | 66.7% | 3 |
-| `verification_gap` | experimental | 40.0% | 5 |
-| `blind_search` | experimental | 0.0% | 1 |
+| `verification_gap` | experimental | 0.0% | 1 |
+| `blind_search` | experimental | — | 0 |
+| `edit_error` | experimental | — | 0 |
 | `environment_stuck` | experimental | — | 0 |
 | `localization_failure` | experimental | — | 0 |
 | `redundant_read` | experimental | — | 0 |
-| **overall** | | **81.2%** | **32** |
+| `weak_verification` | experimental | — | 0 |
+| **overall** | | **91.7%** | **24** |
 
-*Historical comparison only (`--allow-legacy`), not revalidation after the fixes: 32 of 83 old verdicts have an unambiguous location match, 51 are stale or ambiguous; 66 current findings include 34 unmatched claims. Legacy labels lack run/evidence signatures, so matching locations do not establish matching semantics. Strict evaluation rejects all legacy labels; review new finding IDs to establish current precision.*
+The one thing that matters when reading it: **read `n` before the precision.** `n=0` (shown as "—") means the rule produced no findings in this round — not that it was 100% correct; the two must never be conflated. The human verdicts reproducible from this repository number **145** (the v2 and v3 rounds: 204 lines minus 59 duplicates, covering 88 trajectories); earlier and later rounds were not shipped.
 
-Read `n` before you read the precision: **`n=0` (shown as "—") means the rule
-produced no findings in this round, not that it was 100% correct — the two must
-never be conflated.** `redundant_read` is exactly that case: it scored 4/4 in a
-round whose verdicts are not shipped, while the reproducible v3 round contains no
-findings for it at all, so within this repository it is neither confirmed nor
-refuted — its tier therefore stays `experimental` rather than core. For the same
-reason, the human verdicts reproducible from this repository are the **145** from
-the v2 and v3 rounds (204 lines in the files, 59 of them duplicates; covering 88 trajectories); earlier and later rounds were not
-shipped.
+This is the honest result of the annotation loop, not a target that was hit: rules that matched their hypothesis were kept and promoted, the rest are labelled unproven rather than quietly tuned until the number looked good.
 
-**Only `termination_anomaly` (95.5%, 21/22) clears the historical point-estimate bar; this is not a population guarantee. All 66 findings the current code emits have since had one independent AI review (see "Independent AI review" below), and the strict gate passes against that round.** Every other rule is shipped but marked `Tier.EXPERIMENTAL`, and
-`replay`/`findings` exclude experimental rules by default — an individual
-experimental finding should not be read as a conclusion. Use `--tier all` when you
-want volume for aggregate analysis, where the per-category discrimination is
-disclosed alongside.
+### Table 2: independent AI review of all 62 findings from the current code (not human)
 
-This is the honest result of the annotation loop, not a target that was hit. The
-rules that matched their hypothesis were kept and promoted; the rest are labelled
-as unproven rather than quietly tuned until the number looked good.
+`data/labels/reviewed_ai_identity_v3.jsonl` holds an independent AI context review of all 62 findings the current code emits. Review packets were outcome-blinded, no old verdict was read or reused, and every row carries the run/evidence signature plus code and raw-data hashes. **This is an AI review, not human ground truth, and not an independent held-out set: every row is `reviewer_type=ai` and `human_verified=false`.**
 
-Both that table and the 88% bar apply **only to label-validated rules**.
-`localization_failure` runs on a different channel (it compares the agent's patch
-against the gold patch), and the annotation rounds shipped here carry no gold, so
-it is forever `n=0` in that table. Its quality is vouched for by the measured
-discrimination in the "gold channel" section below — the two are not
-interchangeable.
+| Detector | valid | invalid | uncertain | Precision |
+|---|---:|---:|---:|---:|
+| `termination_anomaly` | 38 | 0 | 0 | 100% |
+| `edit_error` | 6 | 0 | 0 | 100% |
+| `redundant_read` | 4 | 0 | 0 | 100% |
+| `execution_loop` | 3 | 0 | 0 | 100% |
+| `verification_gap` | 8 | 3 | 0 | 72.7% |
+| **overall** | **59** | **3** | **0** | **95.2%** |
 
-### Notes on individual rules
+The strict gate (n>=20, core coverage>=80%, point estimate>=88%) **passes** on this review round: `termination_anomaly`, 38 findings at 100% with 100% coverage.
 
-- **`execution_loop`** has a sharp failure mode. Loops detected *with* an
-  intervening edit were valid only **6.9% of the time (2/29)**; loops *without*
-  one numbered a single case in this round (valid), far too few to support any
-  claim. Gating on "no intervening edit" cut volume from **136 findings to 5**
-  across the corpus, and is why this rule now fires rarely. Repeating an action
-  after changing the input is usually *legitimate* debugging.
-- **`localization_failure`** compares the agent's patch against the gold patch's
-  file set. Without `meta["gold_files"]` it stays silent by design rather than
-  guessing from heuristics. To enable it:
+The five known false-positive families from the previous round (v2) — repro scripts not counted as verification, `checker.py`/`checkpoint.py` misread by the scratch regex, `C-c` treated as a repeated command, edit counts inflated by repeated rewrites, convergent exploration flagged as blind search — **are all fixed in this round**: the 21 findings whose v2 verdicts went stale no longer appear with the same evidence. The 3 remaining false positives share one shape: `verification_gap` counts *creating a verification script* (e.g. `edge_case_tests.py`, outside the scratch naming regex) as a source edit — that is the next defect to fix. The new `revert_cycle` sub-pattern initially misread `git stash pop` (which *restores* work) as a discard; fixed with a regression test, and it currently has no hits.
 
-  ```bash
-  python scripts/fetch_gold.py            # pull gold file sets into a sidecar
-  python -m trajdx.cli diagnose data/raw/openhands_sample.jsonl \
-    --gold data/gold/swe-rebench-gold.jsonl
-  ```
+**After fixing rules the review must be redone, never carried over — which is exactly what this round did.**
 
-  If `huggingface.co` is unreachable (timeouts, SSL resets, shards stalling at 0
-  bytes), add `--mirror https://hf-mirror.com`. The script flushes each record as
-  it arrives, so a re-run skips whatever was already fetched.
+### Table 3: the gold channel — `localization_failure` discrimination
 
-  Trajectory logs do not carry the gold patch -- it exists only in the task
-  dataset (SWE-rebench), so this is a required external input. Coverage is printed
-  during diagnosis, because "the sidecar did not match" and "the rule genuinely
-  found nothing" look identical in the output otherwise. `--gold` is accepted by
-  `replay`, `diagnose`, `export` and `findings`.
+`localization_failure` does not run on the annotation channel: it compares the agent's patch against the file set touched by the gold patch. Trajectory logs do not carry the gold patch — it exists only in the task dataset (SWE-rebench):
 
-  **Measured once the gold channel is connected** (297/297 `instance_id`s resolved,
-  covering 300/300 trajectories — **100%**):
+```bash
+python scripts/fetch_gold.py            # pull gold file sets into a sidecar
+python -m trajdx.cli diagnose data/raw/openhands_sample.jsonl \
+  --gold data/gold/swe-rebench-gold.jsonl
+```
 
-  | | resolved | unresolved | Δ |
-  |---|---|---|---|
-  | `termination_anomaly` | 5.3% (8/150) | 20.7% (31/150) | +15.3 |
-  | `localization_failure` | 3.3% (5/150) | **18.0% (27/150)** | **+14.7** |
+If `huggingface.co` is unreachable (timeouts, SSL resets, shards stalling at 0 bytes), add `--mirror https://hf-mirror.com`. The script flushes each record as it arrives, so a re-run skips whatever was already fetched. Coverage is printed during diagnosis, because "the sidecar did not match" and "the rule genuinely found nothing" look identical otherwise. `--gold` is accepted by `replay`, `diagnose`, `export` and `findings`.
 
-  Counted per trajectory (several findings of one category in a run count once).
-  `localization_failure` is the **second-sharpest** discriminator in the table,
-  behind `termination_anomaly`, and the main source of flagged waste: of the 1.6
-  wasted steps per run that `diagnose` reports, 1.4 come from it. Its tier stays
-  `experimental`: the 88% bar is defined over annotation precision, and this rule
-  cannot be annotation-validated (the annotations contain no gold); promoting it on
-  a different yardstick would empty `core` of meaning. It is currently the one rule
-  backed by external ground truth.
-- **`weak_verification`** and **`verification_gap`** charge **zero wasted steps**.
-  A coverage gap is a diagnostic signal, not proof that the steps themselves were
-  wasted.
+Measured once the gold channel was connected (297/297 `instance_id`s resolved, covering 300/300 trajectories — **100%**):
 
----
+| | resolved | unresolved | Δ |
+|---|---|---|---|
+| `termination_anomaly` | 5.3% (8/150) | 20.7% (31/150) | +15.3 |
+| `localization_failure` | 3.3% (5/150) | **18.0% (27/150)** | **+14.7** |
 
-## Wasted Step Ratio
+Counted per trajectory (several findings of one category in a run count once). `localization_failure` is the second-sharpest discriminator in the table, behind `termination_anomaly`, and the main source of flagged waste: of the 1.44 wasted steps per run that `diagnose` reports, 1.36 come from it. Its tier stays experimental: the 88% bar is defined over annotation precision, and this rule cannot be annotation-validated (the annotations contain no gold) — promoting it on a different yardstick would empty `core` of meaning. It is currently the one rule backed by external ground truth.
 
-`WSR` charges every flagged step to exactly one waste category by severity, so
-`WSR <= 1.0` always holds and no step is double-counted.
+## Wasted Step Ratio: a metric that did not pan out
+
+`WSR` charges every flagged step to exactly one waste category by severity, so `WSR <= 1.0` always holds and no step is double-counted.
 
 ```bash
 python scripts/detector_profile.py     # per-detector volume and step coverage
 python scripts/discrimination.py       # AUC of each metric against the resolved label
 ```
 
-**WSR does not predict failure.** Mann-Whitney AUC against the resolved/unresolved
-label is **0.516** — indistinguishable from chance. Reporting it as a failure
-predictor would be a mistake, so the docs and CLI describe it strictly as an
-*efficiency* metric: it says how much of a run was spent re-treading ground, not
-whether the run was going to succeed.
+**Straight talk: WSR does not predict failure.** Its Mann-Whitney AUC against the resolved/unresolved label is **0.520** — indistinguishable from chance. Reporting it as a failure predictor would be a mistake, so the docs and CLI describe it strictly as an *efficiency* metric: it answers "how much of this run was spent re-treading ground", not "was this run going to succeed".
 
-The metrics that do carry signal are process-shape metrics. This table is also
-emitted by `scripts/discrimination.py` (the AUC column takes *failure* as the
-positive class, so a value below 0.5 means "lower is worse" and inverts to above
-0.5):
+The metrics that do carry signal are process-shape metrics. This table is emitted by `scripts/discrimination.py` (the AUC column takes *failure* as the positive class, so a value below 0.5 means "lower is worse" and inverts to above 0.5):
 
 | Metric | AUC (positive = failure) | Inverted | Resolved | Unresolved |
 |---|---|---|---|---|
 | `total_steps` | 0.694 | — | 58.83 | 71.41 |
-| `source_edits` | 0.632 | — | 2.97 | 4.42 |
+| `source_edits` | 0.637 | — | 2.99 | 4.51 |
 | `test_runs` | 0.538 | — | 14.09 | 14.86 |
-| `tests_per_source_edit` | 0.386 | **0.614** | 8.16 | 6.24 |
+| `tests_per_source_edit` | 0.382 | **0.618** | 8.16 | 6.17 |
 | `test_run_ratio` | 0.402 | **0.598** | 0.2451 | 0.2192 |
-| `wasted_step_ratio` | 0.516 | — | 0.0011 | 0.0035 |
+| `novel_observation_ratio` | 0.430 | **0.570** | 0.9269 | 0.9174 |
+| `wasted_step_ratio` | 0.520 | — | 0.0008 | 0.0017 |
 
-Read it as: **resolved runs are shorter, edit less source, and test more per edit.**
-By raw discrimination the strongest single signal is run length (`total_steps`,
-0.694), but that is a symptom rather than a cause; the actionable ones are
-`source_edits` and verification intensity. `wasted_step_ratio` remains
-indistinguishable from chance.
+One-sentence reading: **resolved runs are shorter, edit less source, and test more per edit.** The strongest raw signal is run length (`total_steps`, 0.694), but that is a symptom rather than a cause; the actionable ones are `source_edits` and verification intensity.
 
-"Test runs" here counts `python -c` probes as well: by decision, code the agent
-writes and executes on the spot counts as checking its own work. Excluding those
-probes would sharpen the tests-per-edit signal, but that is not the definition
-used here.
+`novel_observation_ratio`, added this round, is the share of steps that produced a never-before-seen observation, computed straight from the `observation_key` hashes with **no detector in the loop**. It beats WSR (0.520) but stays below verification intensity — honest record: observation novelty carries signal, but it is not decisive.
 
----
+Definition note: "test runs" here counts `python -c` probes as well — code the agent writes and executes on the spot counts as checking its own work. Excluding those probes would sharpen the tests-per-edit signal, but that is not the definition used here.
 
 ## Data and adapters
 
-`data/raw/openhands_sample.jsonl` holds 300 trajectories sampled from a pool of
-67,074 (150 resolved / 150 unresolved, 3 duplicate `instance_id`s left in place
-rather than silently deduplicated).
+`data/raw/openhands_sample.jsonl` holds 300 trajectories sampled from a pool of 67,074 (150 resolved / 150 unresolved, 3 duplicate `instance_id`s left in place rather than silently deduplicated).
 
 Corpus facts worth knowing before writing a rule:
 
-- `exit_status` is `submit` for 263 runs and `RuntimeError: Agent reached maximum
-  iteration (100)` for 37.
-- Mean edits per trajectory is **11.04**, but mean *source* edits is **3.70** —
-  **67% of all edits target scratch or test files**. Any rule that counts "edits"
-  without filtering will be dominated by noise.
-- Tool-call mix: `execute_bash` 9865, `str_replace_editor` 8343, `think` 801,
-  `task_tracker` 264, `finish` 263.
-- Assumption *not* present in this data: no assistant message ever issues multiple
-  tool calls at once, and `model_patch` is never empty.
+- `exit_status` is `submit` for 263 runs and `RuntimeError: Agent reached maximum iteration (100)` for 37.
+- Mean edits per trajectory is **11.04**, but mean *source* edits is **3.70** — **67% of all edits target scratch or test files**. Any rule that counts "edits" without filtering will be dominated by noise.
+- Tool-call mix: `execute_bash` 9865, `str_replace_editor` 8343, `think` 801, `task_tracker` 264, `finish` 263.
+- Assumptions *not* present in this data: no assistant message ever issues multiple tool calls at once, and `model_patch` is never empty.
 
-Adapters: `openhands` (pairs a `tool_call` with its `tool` result by
-`tool_call_id`) and `sweagent` (resolves `edit` targets against
-`state["open_file"]`). Both classify an error only when the step kind can actually
-carry one, so error fingerprints are never scraped out of file contents.
+Adapters: `openhands` (pairs a `tool_call` with its `tool` result by `tool_call_id`) and `sweagent` (resolves `edit` targets against `state["open_file"]`). Both classify an error only when the step kind can actually carry one, so error fingerprints are never scraped out of file contents.
 
 ### The adapters are checked against real logs
 
-The `sweagent` adapter shipped with hand-written fixtures only, so "supports
-SWE-agent" rested on the author's *reading* of the format. Feeding it the logs the
-upstream project actually publishes broke that immediately:
+The `sweagent` adapter shipped with hand-written fixtures only, so "supports SWE-agent" rested on the author's *reading* of the format. Feeding it the logs the upstream project actually publishes broke that immediately: 1 of 22 real upstream `.traj` files could not be read **at all** — it is SWE-agent's function-calling serialization (a `history` role stream with structured `tool_calls`) rather than the `trajectory` step list the adapter knew.
 
-- 1 of 22 real upstream `.traj` files could not be read **at all** -- it is
-  SWE-agent's **function-calling serialization** (a `history` role stream with
-  structured `tool_calls`) rather than a `trajectory` step list, which was the only
-  shape the adapter knew.
-- Both serializations are now supported. Re-validated: **21/21 parse, 221 steps,
-  0 unmapped**; two real logs are vendored as fixtures and
-  `tests/test_real_trajectories.py` re-checks them on every test run.
+Both serializations are now supported. Re-validated: **21/21 parse, 221 steps, 0 unmapped**; two real logs are vendored as fixtures and `tests/test_real_trajectories.py` re-checks them on every test run.
 
 ```bash
 python scripts/fetch_sweagent_trajs.py --validate   # fetch real logs and check them
 python scripts/cross_framework.py                   # both frameworks side by side
 ```
 
-**On the cross-framework numbers, honestly:** the two corpora are **not
-comparable**. OpenHands contributes 300 SWE-bench-style task runs; SWE-agent
-contributes 21 upstream demo/smoke-test logs (plus one real SWE-bench run). So
-`cross_framework.py` prints that caveat on every invocation -- it is an *adapter
-validation* tool, not a framework benchmark. The only claim it currently supports
-is that one pipeline reads both real formats and loses no steps in its vocabulary.
-
----
+**On the cross-framework numbers, honestly:** the two corpora are **not comparable** — OpenHands contributes 300 SWE-bench-style task runs; SWE-agent contributes 21 upstream demo/smoke-test logs (plus one real SWE-bench run). `cross_framework.py` prints that caveat on every invocation: it is an *adapter validation* tool, not a framework benchmark. The only claim it currently supports is that one pipeline reads both real formats and loses no steps in its vocabulary.
 
 ## Repository layout
 
@@ -278,9 +209,10 @@ trajdx/
 │   │   └── sweagent.py          # parses the .traj action language, resolves edit via state["open_file"]
 │   │
 │   └── detectors/               # rules: pure Python, no model, no network
-│       ├── __init__.py          # importing the package registers all 8 rules
+│       ├── __init__.py          # importing the package registers all 9 rules
 │       ├── base.py              # Finding, Category/Phase/Severity/Tier, registry
-│       ├── execution_loop.py    # repeated actions, repeated errors, A-B-A-B thrashing
+│       ├── execution_loop.py    # repeated actions, repeated errors, A-B-A-B thrash, revert cycles
+│       ├── edit_error.py        # consecutive edit-tool rejections
 │       ├── localization.py      # blind_search, redundant_read, localization_failure
 │       ├── verification.py      # verification_gap, weak_verification
 │       ├── termination.py       # no submit, iteration cap, patch ignoring source
@@ -295,29 +227,40 @@ trajdx/
 │   ├── test_heuristics.py       # source-vs-test file classification
 │   ├── test_metrics.py          # definitions of the process-shape metrics
 │   ├── test_gold.py             # gold attachment and localization_failure
+│   ├── test_identity_loading.py # iter_file / limit and versioned-label loading
+│   ├── test_pool_validation.py  # bounded stratified sampling validation
+│   ├── test_reviewed_labels.py  # consistency checks on AI-reviewed labels
 │   ├── test_readme_tables.py    # README numbers must equal script output (drift guard)
 │   ├── test_real_trajectories.py # adapters checked against upstream real logs
 │   └── data/sweagent/           # vendored real SWE-agent logs (verbatim, MIT)
 │
 ├── scripts/                     # offline analysis scripts, not runtime dependencies
-│   ├── fetch_trajectories.py    # download and sample raw trajectories from the HF pool
+│   ├── fetch_trajectories.py    # download and sample the 300 raw trajectories
+│   ├── fetch_openhands_pool.py  # fetch the published 67k OpenHands pool on demand
+│   ├── fetch_sweagent_pool.py   # fetch the 80k SWE-agent pool and convert to JSONL
 │   ├── fetch_gold.py            # fetch gold patch file sets (mirror-aware, resumable)
 │   ├── fetch_sweagent_trajs.py  # fetch real SWE-agent .traj logs for cross-framework checks
 │   ├── cross_framework.py       # two frameworks side by side (prints the incomparability caveat)
 │   ├── detector_profile.py      # per-detector volume and step coverage
 │   ├── discrimination.py        # AUC of each metric against the resolved label
 │   ├── evaluate.py              # precision, threshold curve, the README table
-│   └── check_regression.py      # non-zero exit if a core rule drops below 88%
+│   ├── check_regression.py      # non-zero exit if a core rule drops below 88%
+│   ├── validate_pool.py         # bounded stratified parsing validation (no network, no precision claims)
+│   ├── prepare_review.py        # build outcome-blinded evidence packets for review
+│   ├── record_termination_review.py  # persist termination-related review verdicts
+│   ├── record_verification_review.py # persist verification-related review verdicts
+│   └── finalize_review.py       # assemble review verdicts into versioned labels
 │
 ├── data/
 │   ├── raw/                     # gitignored: raw trajectories (~81 MB / 300 runs),
 │   │                            # regenerate with fetch_trajectories.py
-│   ├── labels/                  # tracked: LLM pre-labels + human review verdicts
+│   ├── labels/                  # tracked: LLM pre-labels + human review verdicts + AI review verdicts
 │   ├── gold/                    # gitignored: gold patch file sets (with a gap list)
 │   └── reports/                 # gitignored: aggregate summaries and stats.csv
 │
 ├── docs/
-│   └── annotation_guide.md      # the labelling rubric shared by all three rounds
+│   ├── annotation_guide.md      # the labelling rubric shared by all three rounds
+│   └── bugfix_validation.md     # record of the correctness fixes and bounded validation
 │
 ├── README.md                    # Chinese documentation
 ├── README.en.md                 # English documentation
@@ -325,63 +268,38 @@ trajdx/
 └── LICENSE                      # MIT
 ```
 
-The data split is deliberate: `data/raw/` and `data/reports/` are large and
-reproducible from a script, so they stay out of the repository, while
-`data/labels/` holds **irreproducible human judgements** and must be tracked.
-Evaluation requires raw trajectories. Existing v2/v3 labels are available only for explicit `--allow-legacy` historical comparison; the current evaluation uses `data/labels/reviewed_ai_identity_v2.jsonl` (independent AI review).
-
-### Independent AI review (not human)
-
-`data/labels/reviewed_ai_identity_v2.jsonl` holds an independent AI context review of all 66 findings the current code emits. Review packets were outcome-blinded, no old verdict was read or reused, and every row carries the run/evidence signature plus code and raw-data hashes. **This is not human ground truth and not an independent held-out set: every row is `reviewer_type=ai` and `human_verified=false`.**
-
-| Detector | valid | invalid | uncertain | Precision |
-|---|---:|---:|---:|---:|
-| `termination_anomaly` | 38 | 2 | 0 | 95.0% |
-| `redundant_read` | 3 | 1 | 0 | 75.0% |
-| `verification_gap` | 7 | 5 | 1 | 58.3% |
-| `execution_loop` | 2 | 3 | 0 | 40.0% |
-| `blind_search` | 0 | 1 | 0 | 0.0% |
-| `weak_verification` | 0 | 3 | 0 | 0.0% |
-| **overall** | **50** | **15** | **1** | **76.9%** |
-
-The strict gate (n>=20, core coverage>=80%, point estimate>=88%) passes on this round: `termination_anomaly`, 40 findings at 95.0% with 100% coverage. It also exposed real false positives worth fixing: `verification_gap` does not count a repro script the agent wrote and ran as verification; `patch_ignores_source` treats root-level probes and `checkpoint.py` as source; `execution_loop/exact` reads `C-c` as a repeated failed command when each cancels a different process; `weak_verification`'s edit count is inflated by repeated rewrites; and `blind_search` flags convergent call-chain exploration. **After fixing those rules the review must be redone; these verdicts must not be carried over.**
+The data split is deliberate: `data/raw/`, `data/gold/` and `data/reports/` are large and reproducible from scripts, so they stay out of the repository, while `data/labels/` holds **irreproducible review judgements** and must be tracked. Evaluation requires raw trajectories. Existing v2/v3 labels are available only for explicit `--allow-legacy` historical comparison; the current evaluation uses `data/labels/reviewed_ai_identity_v3.jsonl` (independent AI review).
 
 ## Re-running the evaluation
 
 ```bash
-# current reviewed labels: strict gate and full evaluation
-python scripts/check_regression.py \
-  --labels data/labels/reviewed_ai_identity_v2.jsonl
-python scripts/evaluate.py \
-  --labels data/labels/reviewed_ai_identity_v2.jsonl
+# current reviewed labels: strict gate + full evaluation
+# evaluate.py re-runs the current detectors every time; stored labels are only
+# matched against what the code emits today, never scored directly
+python scripts/check_regression.py --labels data/labels/reviewed_ai_identity_v3.jsonl
+python scripts/evaluate.py --labels data/labels/reviewed_ai_identity_v3.jsonl
 
-# historical comparison only
-python scripts/evaluate.py \
-  --labels "data/labels/labelled_v3_*.jsonl" --allow-legacy
+# historical comparison only (not a proof of current quality)
+python scripts/evaluate.py --labels "data/labels/labelled_v3_*.jsonl" --allow-legacy
 
-# just the historical table the README quotes
+# the historical table the README quotes
 python scripts/evaluate.py \
   --labels "data/labels/labelled_v3_*.jsonl" --markdown --allow-legacy
-
-# bar check: exits non-zero on a core rule below 88%, or too few samples
-python scripts/check_regression.py \
-  --labels data/labels/reviewed_ai_identity_v2.jsonl
 
 # gold channel: the discrimination of localization_failure (needs fetch_gold.py)
 python -m trajdx.cli diagnose data/raw/openhands_sample.jsonl \
   --gold data/gold/swe-rebench-gold.jsonl
+
+# bounded parsing validation: first 1200 records, stratified sample, one record at a time
+python scripts/validate_pool.py --input data/raw/openhands_pool.jsonl \
+  --sample-out data/raw/validation_openhands.jsonl \
+  --report data/reports/validation_openhands_after.json
 ```
 
 Label files are read with `utf-8-sig` because the annotation pass writes a BOM.
 
-The last command depends on `data/raw/` and `data/gold/`, both gitignored, so it
-cannot run in a bare clone; the matching check in `tests/test_gold.py` skips when
-the data is absent rather than pretending to pass.
+The gold command depends on gitignored `data/raw/` and `data/gold/`, so it cannot run in a bare clone; the matching check in `tests/test_gold.py` skips when the data is absent rather than pretending to pass.
 
-`scripts/check_regression.py` is invoked by the test suite as well, so the core
-tests assert rejection of unversioned labels. **The strict gate passes against the reviewed versioned labels; verdicts must still never be auto-migrated just to pass it.**
-## Bounded pool validation
+The strict gate currently **passes** against `reviewed_ai_identity_v3.jsonl`; the test suite also asserts that it rejects unversioned legacy labels. **Verdicts must never be auto-migrated just to pass the gate: whenever the evidence changes (a rule was fixed, a finding changed identity), the review must be redone.** New verdicts must retain `finding_id`, `run_id`, and `finding_signature`.
 
-`python scripts/validate_pool.py --input data/raw/openhands_pool.jsonl --sample-out data/raw/validation_openhands.jsonl --report data/reports/validation_openhands_after.json`
-
-By default, scans only the first 1200 records and samples by outcome/message length, then diagnoses one record at a time. SWE-agent outcomes come from `target`. This is not full-corpus random sampling, precision/recall measurement or a framework ranking. JSONL APIs support `iter_file` and an actual read limit; JSON arrays still load in full. New verdicts must retain `finding_id`, `run_id`, and `finding_signature`; changed evidence needs new review.
+JSONL loading APIs support `iter_file` and a limit enforced before reading; JSON array files still load in full. The `validate_pool.py` sample does not represent the full corpus, produces no precision/recall, and ranks no frameworks.

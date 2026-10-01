@@ -9,6 +9,7 @@ failure rather than as waste.
 
 from __future__ import annotations
 
+import re
 from typing import ClassVar
 
 from trajdx.detectors.base import (
@@ -20,7 +21,12 @@ from trajdx.detectors.base import (
     Tier,
     register_detector,
 )
-from trajdx.heuristics import is_doc_or_config, is_test_or_scratch
+from trajdx.heuristics import (
+    is_doc_or_config,
+    is_test_or_scratch,
+    repo_relative,
+    split_segments,
+)
 from trajdx.schema import AgentStep, StepKind, Trajectory
 
 #: An edit tool that refused the change reports it in the observation.  OpenHands'
@@ -53,6 +59,92 @@ def _edit_region(step: AgentStep) -> str | None:
     return " ".join(str(old).split())[:200]
 
 
+# --------------------------------------------------------------------------
+# What counts as "the agent checked its own work"
+# --------------------------------------------------------------------------
+
+#: ``python repro.py``, ``bash try.sh`` -- an interpreter invoked on a script.
+_INTERPRETED_SCRIPT = re.compile(
+    r"""(?x)
+      (?:^|[\s;&|(]) (?:python[0-9.]*|pypy[0-9.]*|bash|sh|zsh|ksh|node|deno|bun)
+      \s+ ['"]? (\S+\.(?:py|sh|js|mjs|ts)) ['"]? (?:\s|$)
+    """
+)
+
+#: A script executed directly (``./repro.py``), which the shell runs via its
+#: shebang.  Only the *command word* qualifies: ``cat repro.py`` is a look, not
+#: a run.
+_SCRIPT_DIRECT = re.compile(r"\.(?:py|sh|js|mjs|ts)$")
+
+_SCRIPT_EXT = re.compile(r"\.(?:py|sh|js|mjs|ts)$")
+
+
+def _invoked_script_paths(command: str | None) -> set[str]:
+    """Script files a shell command executes, per segment, quotes respected."""
+    if not command:
+        return set()
+    paths: set[str] = set()
+    for segment in split_segments(command.strip()):
+        seg = segment.strip()
+        if not seg:
+            continue
+        tokens = seg.split()
+        if tokens and _SCRIPT_DIRECT.search(tokens[0]):
+            paths.add(tokens[0])
+        matched = _INTERPRETED_SCRIPT.search(seg)
+        if matched:
+            paths.add(matched.group(1))
+    return paths
+
+
+def agent_written_scripts(trajectory: Trajectory) -> set[str]:
+    """Scratch scripts the agent itself wrote earlier in this run.
+
+    The verification gap's top false positive was exactly this shape: the agent
+    writes ``reproduce_issue.py`` and runs it after every edit, which *is*
+    verification -- but ``is_test_command`` only credits ``test_*.py`` and the
+    pytest family, so the run looked unverified.  Only scratch-named scripts
+    count, and only ones this trajectory actually created, so running a script
+    that shipped with the repo is never mistaken for self-checking.
+    """
+    out: set[str] = set()
+    for step in trajectory.steps:
+        if step.kind is not StepKind.EDIT or edit_was_rejected(step):
+            continue
+        files = step.files_touched or (
+            (step.args["path"],) if step.args.get("path") else ()
+        )
+        for f in files:
+            p = repo_relative(f)
+            if p and _SCRIPT_EXT.search(p) and is_test_or_scratch(p):
+                out.add(p)
+    return out
+
+
+def verification_steps(trajectory: Trajectory) -> list[int]:
+    """Every step where the agent checked its own work, in order.
+
+    Test-suite runs (``is_test_run``, which already covers ``python -c``
+    probes) plus executions of scripts the agent wrote itself this run.  Both
+    verification detectors read through this one definition, so "what counts
+    as verification" can never drift between the gap rule and the intensity
+    rule.
+    """
+    written = agent_written_scripts(trajectory)
+    out: list[int] = []
+    for idx, step in enumerate(trajectory.steps):
+        if step.is_test_run:
+            out.append(idx)
+            continue
+        if not written or step.kind is not StepKind.SHELL:
+            continue
+        for path in _invoked_script_paths(str(step.args.get("command") or "")):
+            if repo_relative(path) in written:
+                out.append(idx)
+                break
+    return out
+
+
 def source_edit_events(trajectory: Trajectory) -> list[int]:
     """All successful source edit events, without losing repeated-edit timing."""
     out: list[int] = []
@@ -68,23 +160,38 @@ def source_edit_events(trajectory: Trajectory) -> list[int]:
 
 
 def source_edits(trajectory: Trajectory) -> list[int]:
-    """Distinct source changes for counting, not for verification chronology.
+    """Distinct source-edit *sessions* for counting, not for verification chronology.
 
-    Rewrites of the same region count once; every successful rewrite remains in
-    source_edit_events so a post-test rewrite still invalidates verification.
+    One session is continuous unverified work on the same region of the same
+    file.  A new session starts when the agent verifies (a test run or one of
+    its own scripts), moves to a different file, or edits a different region --
+    that last condition keeps the pilot ruling that rewriting function ``f``
+    five times is one piece of work while touching ``g`` afterwards is another.
+
+    Every successful rewrite remains in ``source_edit_events`` so a post-test
+    rewrite still invalidates verification timing.
     """
+    events = source_edit_events(trajectory)
+    if not events:
+        return []
+    verified = set(verification_steps(trajectory))
     out: list[int] = []
-    seen_regions: set[tuple[tuple[str, ...], str]] = set()
-    for idx in source_edit_events(trajectory):
+    prev_key: tuple[frozenset[str], str | None] | None = None
+    prev_idx: int | None = None
+    for idx in events:
         step = trajectory.steps[idx]
-        files = step.files_touched or ((step.args["path"],) if step.args.get("path") else ())
-        region = _edit_region(step)
-        if region is not None and files:
-            key = (tuple(sorted(files)), region)
-            if key in seen_regions:
-                continue
-            seen_regions.add(key)
-        out.append(idx)
+        files = frozenset(
+            step.files_touched or ((step.args["path"],) if step.args.get("path") else ())
+        )
+        key = (files, _edit_region(step))
+        same_session = (
+            prev_idx is not None
+            and key == prev_key
+            and not any(prev_idx < v < idx for v in verified)
+        )
+        if not same_session:
+            out.append(idx)
+        prev_idx, prev_key = idx, key
     return out
 
 
@@ -107,7 +214,7 @@ class VerificationGapDetector(Detector):
         if trajectory.n_steps == 0:
             return []
 
-        test_steps = [i for i, s in enumerate(trajectory.steps) if s.is_test_run]
+        verify_steps = verification_steps(trajectory)
         edit_steps = source_edits(trajectory)
         edit_events = source_edit_events(trajectory)
         submit_steps = [i for i, s in enumerate(trajectory.steps) if s.kind is StepKind.SUBMIT]
@@ -116,7 +223,7 @@ class VerificationGapDetector(Detector):
         findings: list[Finding] = []
 
         # --- never verified at all -----------------------------------------
-        if not test_steps and edit_steps:
+        if not verify_steps and edit_steps:
             findings.append(
                 Finding(
                     detector=self.name,
@@ -127,8 +234,8 @@ class VerificationGapDetector(Detector):
                     end=end,
                     wasted_steps=(),
                     evidence=(
-                        f"submitted after {len(edit_steps)} edit(s) without ever "
-                        f"executing the test suite"
+                        f"submitted after {len(edit_steps)} edit session(s) without ever "
+                        f"executing the test suite or a self-written script"
                     ),
                     confidence=0.9,
                     detail={"pattern": "never_verified", "n_edits": len(edit_steps)},
@@ -137,27 +244,27 @@ class VerificationGapDetector(Detector):
             return findings
 
         # --- verified, but not after the final change ------------------------
-        if test_steps and edit_events:
-            last_edit, last_test = edit_events[-1], test_steps[-1]
-            if last_edit > last_test and last_test < end:
+        if verify_steps and edit_events:
+            last_edit, last_verify = edit_events[-1], verify_steps[-1]
+            if last_edit > last_verify and last_verify < end:
                 findings.append(
                     Finding(
                         detector=self.name,
                         category=Category.VERIFICATION_GAP,
                         phase=Phase.VERIFICATION,
                         severity=Severity.MEDIUM,
-                        start=last_test,
+                        start=last_verify,
                         end=end,
                         wasted_steps=(),
                         evidence=(
-                            f"last test ran at step {last_test} but the final edit was "
-                            f"step {last_edit}; {end - last_test} later steps went "
+                            f"last verification ran at step {last_verify} but the final edit was "
+                            f"step {last_edit}; {end - last_verify} later steps went "
                             f"unverified"
                         ),
                         confidence=0.8,
                         detail={
                             "pattern": "stale_verification",
-                            "last_test": last_test,
+                            "last_test": last_verify,
                             "last_edit": last_edit,
                         },
                     )
@@ -174,14 +281,16 @@ class WeakVerificationDetector(Detector):
     failure: trajectories with 3 or more *source* edits and fewer than 0.75 test
     executions per edit failed 73% of the time, against a 50% base rate.
 
-    The edit count deliberately excludes tests and scratch scripts.  An earlier
-    version of this rule counted every file write, and it reported an 81% failure
+    The edit count deliberately excludes tests and scratch scripts, and counts
+    *sessions* rather than raw edits: consecutive unverified rewrites of the
+    same region are one piece of work, not N edits (see ``source_edits``).  An
+    earlier version counted every file write, and it reported an 81% failure
     rate from a seemingly much stronger signal -- which turned out to be an
     artefact.  Agents constantly write a ``reproduce_issue.py`` and immediately
     run it, which is verification, not churn; across this dataset **67% of all
     edits touch scratch or test files**.  Counting them made heavy testers look
-    like reckless editors.  LLM pre-annotation caught this, which is exactly what
-    the annotation loop exists for.
+    like reckless editors.  LLM pre-annotation caught this, which is exactly
+    what the annotation loop exists for.
 
     Note the deliberate asymmetry with the rest of the toolkit: this detector
     charges **no wasted steps**.  Skipping verification does not burn budget, it
@@ -212,7 +321,7 @@ class WeakVerificationDetector(Detector):
 
     def detect(self, trajectory: Trajectory) -> list[Finding]:
         edit_steps = source_edits(trajectory)
-        test_steps = [i for i, s in enumerate(trajectory.steps) if s.is_test_run]
+        test_steps = verification_steps(trajectory)
         n_edits, n_tests = len(edit_steps), len(test_steps)
 
         if n_edits < self.min_edits:

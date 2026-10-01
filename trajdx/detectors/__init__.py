@@ -13,6 +13,7 @@ from trajdx.detectors.base import (
     register_detector,
 )
 from trajdx.detectors.environment import EnvironmentStuckDetector
+from trajdx.detectors.edit_error import EditErrorDetector
 from trajdx.detectors.execution_loop import ExecutionLoopDetector
 from trajdx.detectors.localization import (
     BlindSearchDetector,
@@ -37,6 +38,7 @@ __all__ = [
     "filter_findings",
     "register_detector",
     "BlindSearchDetector",
+    "EditErrorDetector",
     "EnvironmentStuckDetector",
     "ExecutionLoopDetector",
     "LocalizationFailureDetector",

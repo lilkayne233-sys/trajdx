@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from trajdx.detectors import detect_all
 from trajdx.detectors.base import Category, Severity
+from trajdx.detectors.edit_error import EditErrorDetector
 from trajdx.detectors.environment import EnvironmentStuckDetector
 from trajdx.detectors.execution_loop import ExecutionLoopDetector
 from trajdx.detectors.localization import BlindSearchDetector, RedundantReadDetector
@@ -37,6 +38,67 @@ def test_exact_loop_detects_identical_failing_command():
     assert exact, "three identical failing commands is a loop"
     assert exact[0].wasted_steps == (1, 2), "the first attempt is not waste"
     assert exact[0].severity is Severity.HIGH
+
+
+def test_interrupt_keystrokes_are_not_repeated_commands():
+    """Reviewed FP: each `C-c` cancels a *different* process.
+
+    Byte-identical commands, unrelated actions -- the exact pattern read two
+    cancellations as a repeated failing command.
+    """
+    steps = [
+        shell(0, "python -m pytest tests/", observation="running", is_test_run=True),
+        shell(1, "C-c", observation=""),
+        shell(2, "C-c", observation=""),
+        shell(3, "C-c", observation=""),
+        submit(4),
+    ]
+    findings = ExecutionLoopDetector().detect(make_trajectory(steps))
+    assert findings == [], "cancelling processes is bookkeeping, not a loop"
+
+
+def test_revert_cycle_fires_on_edit_revert_alternation():
+    """The rubric's revert-and-re-apply thrash, previously invisible to the rules."""
+    steps = [
+        edit(0, "src/pkg/core.py", payload="v1"),
+        shell(1, "git checkout src/pkg/core.py", observation="restored"),
+        edit(2, "src/pkg/core.py", payload="v2"),
+        shell(3, "git checkout src/pkg/core.py", observation="restored"),
+        submit(4),
+    ]
+    findings = ExecutionLoopDetector().detect(make_trajectory(steps))
+    cycles = [f for f in findings if f.detail["pattern"] == "revert_cycle"]
+    assert cycles, "two edit/revert rounds on one file is thrashing"
+    assert cycles[0].detail["cycles"] == 2
+    assert cycles[0].wasted_steps[0] > cycles[0].start, "the first edit was legitimate"
+
+
+def test_single_edit_then_revert_is_not_a_cycle():
+    """One discarded experiment is debugging; the rule needs repetition."""
+    steps = [
+        edit(0, "src/pkg/core.py", payload="v1"),
+        shell(1, "git checkout src/pkg/core.py", observation="restored"),
+        submit(2),
+    ]
+    findings = ExecutionLoopDetector().detect(make_trajectory(steps))
+    assert not [f for f in findings if f.detail["pattern"] == "revert_cycle"]
+
+
+def test_stash_pop_is_not_a_revert():
+    """Reviewed FP: edit -> stash -> edit -> stash-pop is pristine-tree diagnosis.
+
+    ``git stash pop`` *restores* the agent's work; counting it as a discard made
+    the revert-cycle rule flag a legitimate diagnostic sequence.
+    """
+    steps = [
+        edit(0, "src/pkg/core.py", payload="v1"),
+        shell(1, "git stash", observation="Saved working directory"),
+        edit(2, "src/pkg/core.py", payload="v2"),
+        shell(3, "git stash pop", observation="restored"),
+        submit(4),
+    ]
+    findings = ExecutionLoopDetector().detect(make_trajectory(steps))
+    assert not [f for f in findings if f.detail["pattern"] == "revert_cycle"]
 
 
 def test_exact_and_error_loop_for_same_occurrences_is_reported_once():
@@ -213,13 +275,28 @@ def test_weak_verification_ignores_scratch_scripts():
 
 
 def test_weak_verification_fires_on_untested_source_churn():
-    steps = [edit(i, "src/pkg/core.py", payload=f"v{i}") for i in range(6)]
+    steps = [
+        edit(i, f"src/pkg/file_{i}.py", payload="x") for i in range(6)
+    ]
     steps.append(submit(6))
     findings = WeakVerificationDetector().detect(make_trajectory(steps))
     assert findings
     assert findings[0].detail["n_edits"] == 6
     assert findings[0].detail["n_tests"] == 0
     assert findings[0].n_wasted == 0, "a coverage gap is not wasted steps"
+
+
+def test_weak_verification_collapses_unverified_rewrites_of_one_region():
+    """Reviewed FP: N rewrites of one region must not read as N edits."""
+    steps = []
+    for i in range(6):
+        s = edit(i, "src/pkg/core.py", payload=f"v{i}")
+        s.args["old_str"] = "def f(x):\n    return x"
+        steps.append(s)
+    steps.append(submit(6))
+    # One continuous unverified session on one region: the intensity rule no
+    # longer sees "6 edits, 0 tests", it sees the 1 piece of work it was.
+    assert WeakVerificationDetector().detect(make_trajectory(steps)) == []
 
 
 def test_source_edits_separates_library_from_scratch():
@@ -239,7 +316,7 @@ def test_never_verified_when_edits_precede_submit():
     assert [f for f in findings if f.detail["pattern"] == "never_verified"]
 
 
-def test_repeated_edit_after_test_invalidates_verification_without_padding_count():
+def test_repeated_edit_after_test_is_a_new_unverified_session():
     first = edit(0, "src/pkg/core.py", payload="first")
     first.args["old_str"] = "def f(): return 0"
     repeated = edit(2, "src/pkg/core.py", payload="second")
@@ -251,7 +328,9 @@ def test_repeated_edit_after_test_invalidates_verification_without_padding_count
         submit(3),
     ]
     trajectory = make_trajectory(steps)
-    assert source_edits(trajectory) == [0], "count the region only once"
+    # The rewrite landed *after* the test, so it is a new unverified session;
+    # chronology is what decides staleness, and it still counts both events.
+    assert source_edits(trajectory) == [0, 2]
     assert source_edit_events(trajectory) == [0, 2], "retain every edit event for timing"
     findings = VerificationGapDetector().detect(trajectory)
     assert len(findings) == 1
@@ -309,6 +388,100 @@ def test_running_tests_clears_never_verified():
     ]
     findings = VerificationGapDetector().detect(make_trajectory(steps))
     assert not [f for f in findings if f.detail["pattern"] == "never_verified"]
+
+
+def test_running_agent_written_repro_script_counts_as_verification():
+    """Reviewed FP: `python reproduce_issue.py` after every edit IS verification.
+
+    The AI review round rejected a `stale_verification` finding whose evidence
+    showed the agent re-running its own repro script (which imported the edited
+    library) three times after the final change.  `is_test_command` only credits
+    pytest and `test_*.py`, so those runs were invisible.  A scratch script the
+    agent itself wrote earlier in the run now counts.
+    """
+    steps = [
+        edit(0, "reproduce_issue.py", payload="import pkg.core"),
+        edit(1, "src/pkg/core.py", payload="v1"),
+        shell(2, "python reproduce_issue.py", observation="ValueError: bug"),
+        edit(3, "src/pkg/core.py", payload="v2"),
+        shell(4, "python reproduce_issue.py", observation="all good"),
+        submit(5),
+    ]
+    assert VerificationGapDetector().detect(make_trajectory(steps)) == []
+
+
+def test_running_a_preexisting_script_is_not_verification():
+    """Only scripts the agent itself wrote count -- the repo's own tools do not."""
+    steps = [
+        edit(0, "src/pkg/core.py"),
+        shell(1, "python scripts/other.py", observation="done"),
+        submit(2),
+    ]
+    findings = VerificationGapDetector().detect(make_trajectory(steps))
+    assert [f for f in findings if f.detail["pattern"] == "never_verified"]
+
+
+def test_weak_verification_credits_agent_script_runs():
+    """Three source edits verified by three self-written-script runs: healthy."""
+    steps = [
+        edit(0, "repro_probe.py", payload="import pkg"),
+        edit(1, "src/pkg/core.py", payload="v1"),
+        shell(2, "python repro_probe.py", observation="ran"),
+        edit(3, "src/pkg/other.py", payload="v1"),
+        shell(4, "python repro_probe.py", observation="ran"),
+        edit(5, "src/pkg/third.py", payload="v1"),
+        shell(6, "python repro_probe.py", observation="ran"),
+        submit(7),
+    ]
+    # Without script-run credit this is 3 edits / 0 tests and fires; with it,
+    # intensity is 1.0 and the run is not suspicious.
+    assert WeakVerificationDetector().detect(make_trajectory(steps)) == []
+
+
+# --------------------------------------------------------------------------
+# Edit errors
+# --------------------------------------------------------------------------
+
+
+def _rejected_edit(idx: int, path: str = "src/pkg/core.py") -> AgentStep:
+    step = edit(idx, path)
+    step.observation = "ERROR:\nNo replacement was performed, old_str did not appear"
+    return step
+
+
+def test_rejected_edit_streak_fires():
+    """Three refusals in a row on one file: the agent is fighting its tool."""
+    steps = [
+        _rejected_edit(0),
+        _rejected_edit(1),
+        _rejected_edit(2),
+        edit(3, "src/pkg/core.py", payload="finally"),  # landed after the streak
+        submit(4),
+    ]
+    findings = EditErrorDetector().detect(make_trajectory(steps))
+    assert len(findings) == 1
+    assert findings[0].detail["pattern"] == "rejected_edit_streak"
+    assert findings[0].detail["path"] == "src/pkg/core.py"
+    assert findings[0].wasted_steps == (1, 2), "the first rejection was legitimate"
+
+
+def test_rejected_edits_with_a_landed_edit_in_between_do_not_fire():
+    """A landed edit inside the span means the agent recovered: progress, not flailing."""
+    steps = [
+        _rejected_edit(0),
+        _rejected_edit(1),
+        edit(2, "src/pkg/core.py", payload="recovered"),
+        _rejected_edit(3),
+        _rejected_edit(4),
+        submit(5),
+    ]
+    assert EditErrorDetector().detect(make_trajectory(steps)) == []
+
+
+def test_single_rejected_edit_never_fires():
+    """One refusal followed by success is ordinary debugging."""
+    steps = [_rejected_edit(0), edit(1, "src/pkg/core.py", payload="ok"), submit(2)]
+    assert EditErrorDetector().detect(make_trajectory(steps)) == []
 
 
 # --------------------------------------------------------------------------
@@ -594,6 +767,34 @@ def test_a_real_streak_of_source_reads_still_fires():
     findings = BlindSearchDetector().detect(make_trajectory(steps))
     assert len(findings) == 1
     assert findings[0].detail["run_length"] == 10
+
+
+def test_exploration_that_converges_on_later_edits_is_not_blind():
+    """Reviewed FP: walking a call chain toward the eventual fix is investigation.
+
+    The reviewed round rejected every blind-search finding because convergent
+    exploration and flailing look identical from streak length alone.  A streak
+    whose inspected files overlap what the agent eventually edited is no longer
+    flagged at all.
+    """
+    steps = [read(i, "src/pkg/module_%d.py" % i) for i in range(13)]
+    steps += [edit(13, "src/pkg/module_5.py"), submit(14)]
+    assert BlindSearchDetector().detect(make_trajectory(steps)) == []
+
+
+def test_exploration_converging_on_the_final_patch_is_not_blind():
+    """Same check against the shipped diff, not just in-run edit steps."""
+    diff = (
+        "diff --git a/src/pkg/module_7.py b/src/pkg/module_7.py\n"
+        "--- a/src/pkg/module_7.py\n"
+        "+++ b/src/pkg/module_7.py\n"
+        "@@ -1,1 +1,2 @@\n"
+        "+x\n"
+    )
+    steps = [read(i, "src/pkg/module_%d.py" % i) for i in range(13)]
+    steps += [submit(13)]
+    trajectory = make_trajectory(steps, model_patch=diff)
+    assert BlindSearchDetector().detect(trajectory) == []
 
 
 def test_no_submit_is_not_reported_twice_when_the_step_budget_ran_out():

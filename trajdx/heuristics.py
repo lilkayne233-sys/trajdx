@@ -240,8 +240,14 @@ _TEST_FILE = re.compile(
 )
 
 #: Throwaway scripts agents write to reproduce or probe an issue.
+#:
+#: The ``check`` prefix must be followed by a separator.  A bare ``check``
+#: prefix classified ``src/zope/security/checker.py`` and
+#: ``ignite/handlers/checkpoint.py`` -- real library source -- as scratch,
+#: which made ``patch_ignores_source`` fire on patches that did touch source.
+#: ``check_issue.py`` and friends remain scratch; ``checker.py`` is not.
 _SCRATCH_FILE = re.compile(
-    r"(^|/)(repro|reproduce|repro_|scratch|playground|sandbox|tmp|temp|debug|check|demo|verify|final)[^/]*"
+    r"(^|/)(repro|reproduce|repro_|scratch|playground|sandbox|tmp|temp|debug|check[_-]|demo|verify|final)[^/]*"
     r"\.(py|sh|js|ts|sql|txt|md|yml|yaml)$",
 )
 

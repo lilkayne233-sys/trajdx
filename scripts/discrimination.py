@@ -79,6 +79,10 @@ def main() -> int:
         ("test_runs", lambda t, r: r.test_runs),
         ("tests_per_source_edit", lambda t, r: r.tests_per_source_edit),
         ("test_run_ratio", lambda t, r: r.test_run_ratio),
+        # Observation novelty needs no detector at all -- it reads the identity
+        # hashes every step carries.  It is the detector-free answer to the
+        # question WSR tried to answer through detector output.
+        ("novel_observation_ratio", lambda t, r: r.novel_observation_ratio),
     ]
 
     print(f"n = {len(rows)}  (failed = {sum(1 for t, _ in rows if failed(t))})\n")
@@ -113,6 +117,7 @@ def main() -> int:
         ("test_runs", lambda r: r.test_runs, 2),
         ("tests_per_source_edit", lambda r: r.tests_per_source_edit, 2),
         ("test_run_ratio", lambda r: r.test_run_ratio, 4),
+        ("novel_observation_ratio", lambda r: r.novel_observation_ratio, 4),
         ("wasted_step_ratio", lambda r: r.ratio, 4),
     ]:
         print(

@@ -13,6 +13,10 @@ two alternate:
 ``oscillation``
     Two actions alternate A-B-A-B, a thrash pattern that neither of the above
     catches.
+``revert_cycle``
+    An edit is applied, the working tree is rolled back, the file is edited
+    again -- twice or more in a row.  Unverified thrashing the rubric names
+    explicitly and none of the above three patterns can express.
 
 The load-bearing condition
 --------------------------
@@ -39,6 +43,7 @@ too few to claim precision, which is why this detector ships as experimental.
 
 from __future__ import annotations
 
+import re
 from collections import Counter, defaultdict
 from typing import Any, ClassVar
 
@@ -51,11 +56,42 @@ from trajdx.detectors.base import (
     dense_groups,
     register_detector,
 )
-from trajdx.schema import StepKind, Trajectory
+from trajdx.heuristics import repo_relative
+from trajdx.schema import AgentStep, StepKind, Trajectory
 
 #: Steps that are bookkeeping rather than action.  A `think` or `task_tracker`
 #: call repeated three times is a habit, not a loop the budget is being burnt on.
 _NON_ACTION_KINDS = frozenset({StepKind.THOUGHT, StepKind.PLAN})
+
+#: A bare interrupt keystroke sent as a command.  Agents cancel the running
+#: process with ``C-c`` constantly, and each ``C-c`` ends a *different*
+#: process -- byte-identical commands, unrelated actions.  Reviewed as a false
+#: positive when two cancellations were counted as a repeated failing command.
+_INTERRUPT_COMMAND = re.compile(r"^(?:c[-_ ]?c|\^c|ctrl[-_ +]?c)$", re.IGNORECASE)
+
+#: Commands that roll the working tree back, i.e. *discard* the agent's own
+#: edits.  ``git stash pop``/``apply`` restore discarded work instead, so they
+#: must not count: an edit -> stash -> edit -> stash-pop sequence is the agent
+#: testing the pristine tree, which is diagnosis, not thrashing (reviewed as a
+#: false positive on mne-tools__mne-python-12080).
+_DISCARD_COMMAND = re.compile(
+    r"""(?x)
+      (?:^|[\s;&|(]) git \s+ (?:checkout|restore) (?:\s|$)
+    | (?:^|[\s;&|(]) git \s+ reset (?:\s|$)
+    | (?:^|[\s;&|(]) git \s+ stash (?:$|\s+(?!pop\b|apply\b))
+    """
+)
+
+
+def _is_discard_command(command: str) -> bool:
+    return bool(command) and _DISCARD_COMMAND.search(command) is not None
+
+
+def _is_interrupt(step: AgentStep) -> bool:
+    if step.kind is not StepKind.SHELL:
+        return False
+    cmd = str(step.args.get("command") or "").strip()
+    return bool(cmd) and _INTERRUPT_COMMAND.match(cmd) is not None
 
 
 @register_detector
@@ -73,6 +109,7 @@ class ExecutionLoopDetector(Detector):
         error_repeats: int = 3,
         error_window: int = 20,
         oscillate_cycles: int = 3,
+        revert_cycles: int = 2,
         ignore_thoughts: bool = True,
         require_same_observation: bool = True,
         require_no_intervening_edit: bool = True,
@@ -82,6 +119,7 @@ class ExecutionLoopDetector(Detector):
         self.error_repeats = error_repeats
         self.error_window = error_window
         self.oscillate_cycles = oscillate_cycles
+        self.revert_cycles = revert_cycles
         self.ignore_thoughts = ignore_thoughts
         self.require_same_observation = require_same_observation
         self.require_no_intervening_edit = require_no_intervening_edit
@@ -116,6 +154,7 @@ class ExecutionLoopDetector(Detector):
             if not any(occurrences <= covered for covered in exact_coverage):
                 findings.append(finding)
         findings.extend(self._oscillations(trajectory))
+        findings.extend(self._revert_cycles(trajectory))
         return findings
 
     # ------------------------------------------------------ repeated actions
@@ -128,7 +167,8 @@ class ExecutionLoopDetector(Detector):
         keys = [
             (
                 None
-                if self.ignore_thoughts and s.kind in _NON_ACTION_KINDS
+                if (self.ignore_thoughts and s.kind in _NON_ACTION_KINDS)
+                or _is_interrupt(s)
                 else s.exact_key
             )
             for s in trajectory.steps
@@ -195,7 +235,7 @@ class ExecutionLoopDetector(Detector):
         """Same error fingerprint recurring while the agent keeps changing tactics."""
         groups: dict[str, list[int]] = defaultdict(list)
         for idx, step in enumerate(trajectory.steps):
-            if step.error_fp:
+            if step.error_fp and not _is_interrupt(step):
                 groups[step.error_fp].append(idx)
 
         findings: list[Finding] = []
@@ -235,14 +275,14 @@ class ExecutionLoopDetector(Detector):
     # ---------------------------------------------------------- oscillation
     def _oscillations(self, trajectory: Trajectory) -> list[Finding]:
         """Detect A-B-A-B-A-B style alternation between two actions."""
-        keys = [s.action_key for s in trajectory.steps]
+        keys = [None if _is_interrupt(s) else s.action_key for s in trajectory.steps]
         findings: list[Finding] = []
         reported: set[int] = set()
         i = 0
         n = len(keys)
         while i + 3 < n:
             a, b = keys[i], keys[i + 1]
-            if a == b:
+            if a is None or b is None or a == b:
                 i += 1
                 continue
             cycles = 0
@@ -279,6 +319,78 @@ class ExecutionLoopDetector(Detector):
                     )
                 )
                 i += cycles * 2
+                continue
+            i += 1
+        return findings
+
+    # ---------------------------------------------------------- revert cycles
+    def _revert_cycles(self, trajectory: Trajectory) -> list[Finding]:
+        """Edit a file, roll the tree back, edit it again, roll back again.
+
+        The annotation rubric calls the revert-and-re-apply cycle a hallmark of
+        unverified thrashing, and nothing else in the rule set catches it: the
+        edits are all different (so the exact pattern is silent), no error
+        recurs (so the error pattern is silent), and an edit/revert alternation
+        reads as ordinary A-B oscillation between unlike actions.  A revert
+        names no path, so it pairs with whatever was edited just before it.
+        """
+        events: list[tuple[int, str, str | None]] = []
+        for idx, step in enumerate(trajectory.steps):
+            if step.kind is StepKind.EDIT:
+                files = step.files_touched or (
+                    (step.args["path"],) if step.args.get("path") else ()
+                )
+                if files:
+                    events.append((idx, "edit", repo_relative(files[0])))
+            elif step.kind is StepKind.SHELL and _is_discard_command(
+                str(step.args.get("command") or "")
+            ):
+                events.append((idx, "revert", None))
+
+        findings: list[Finding] = []
+        i = 0
+        while i + 3 < len(events):
+            first = events[i]
+            if first[1] != "edit":
+                i += 1
+                continue
+            pairs = 0
+            j = i
+            while (
+                j + 1 < len(events)
+                and events[j][1] == "edit"
+                and events[j][2] == first[2]
+                and events[j + 1][1] == "revert"
+            ):
+                pairs += 1
+                j += 2
+            if pairs >= self.revert_cycles:
+                span = (events[i][0], events[j - 1][0])
+                steps_in_span = [
+                    e[0] for e in events[i:j] if e[0] <= span[1]
+                ]
+                findings.append(
+                    Finding(
+                        detector=self.name,
+                        category=Category.EXECUTION_LOOP,
+                        phase=Phase.EXECUTION,
+                        severity=Severity.MEDIUM,
+                        start=span[0],
+                        end=span[1],
+                        wasted_steps=tuple(steps_in_span[1:]),
+                        evidence=(
+                            f"{first[2]} was edited and reverted {pairs} times in a row; "
+                            f"{pairs - 1} of the edit/revert pairs bought nothing"
+                        ),
+                        confidence=0.8,
+                        detail={
+                            "pattern": "revert_cycle",
+                            "path": first[2],
+                            "cycles": pairs,
+                        },
+                    )
+                )
+                i = j
                 continue
             i += 1
         return findings

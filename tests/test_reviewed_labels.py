@@ -5,8 +5,8 @@ import json
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-REVIEWED = ROOT / "data" / "labels" / "reviewed_ai_identity_v2.jsonl"
-SUMMARY = ROOT / "data" / "reports" / "review_v2" / "review_summary.json"
+REVIEWED = ROOT / "data" / "labels" / "reviewed_ai_identity_v3.jsonl"
+SUMMARY = ROOT / "data" / "reports" / "review_v3" / "review_summary.json"
 
 
 def _rows() -> list[dict]:
@@ -40,10 +40,9 @@ def test_reviewed_labels_cover_every_detector_that_fires():
     assert detectors == {
         "termination_anomaly",
         "verification_gap",
-        "weak_verification",
         "execution_loop",
         "redundant_read",
-        "blind_search",
+        "edit_error",
     }
     if SUMMARY.exists():
         summary = json.loads(SUMMARY.read_text(encoding="utf-8"))
@@ -68,7 +67,7 @@ def test_strict_gate_accepts_the_reviewed_labels_but_not_unversioned_ones():
         cwd=ROOT, capture_output=True, text=True,
     )
     assert passing.returncode == 0, passing.stdout + passing.stderr
-    assert "95.0%" in passing.stdout
+    assert "100.0%" in passing.stdout
 
     refusing = subprocess.run(
         [sys.executable, "scripts/check_regression.py", "--labels",
