@@ -97,16 +97,17 @@ def _invoked_script_paths(command: str | None) -> set[str]:
     return paths
 
 
-def created_scripts(trajectory: Trajectory) -> set[str]:
-    """Script files (any name) this trajectory created with a successful edit.
+def created_files(trajectory: Trajectory) -> set[str]:
+    """Files (any name, any extension) this trajectory created with a successful edit.
 
     The v3 review's three remaining false positives were all the same shape:
     the agent writes ``edge_cases.py`` / ``original_repro.py`` /
     ``edge_case_tests.py`` as verification tooling and runs it, but the names
     match no scratch pattern, so the *creation* counted as a source edit and
     made the run look unverified after its last real change.  The reviewer's
-    ruling is the definition now: a file the agent created this run as a script
-    is tooling, not library source, whatever it is called.
+    ruling is the definition now: a file the agent created this run is tooling
+    the agent brought into existence, not library source it modified, whatever
+    it is called.
     """
     out: set[str] = set()
     for step in trajectory.steps:
@@ -122,9 +123,14 @@ def created_scripts(trajectory: Trajectory) -> set[str]:
         )
         for f in files:
             p = repo_relative(f)
-            if p and _SCRIPT_EXT.search(p):
+            if p:
                 out.add(p)
     return out
+
+
+def created_scripts(trajectory: Trajectory) -> set[str]:
+    """The subset of :func:`created_files` that are runnable scripts."""
+    return {p for p in created_files(trajectory) if _SCRIPT_EXT.search(p)}
 
 
 def agent_written_scripts(trajectory: Trajectory) -> set[str]:

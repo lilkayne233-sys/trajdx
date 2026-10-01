@@ -110,6 +110,176 @@ def test_exact_and_error_loop_for_same_occurrences_is_reported_once():
     assert [f.detail["pattern"] for f in findings] == ["exact"]
 
 
+# --------------------------------------------------------------------------
+# v4 review round: the nine rejected findings, one regression test each
+# --------------------------------------------------------------------------
+
+
+def test_exact_loop_suppressed_by_environment_rebuild():
+    """v4 invalid (dvc-3132): `cat config` between fixture rebuilds is a checkpoint.
+
+    The three identical `cat`s observed a *different world* each time: the
+    fixture directory was deleted, recreated and re-configured in between.
+    """
+    steps = [
+        shell(0, "cd /tmp/case_test && cat .dvc/config", observation="config v1"),
+        shell(1, "cd /tmp && rm -rf case_test && mkdir case_test && dvc init"),
+        shell(2, "cd /tmp/case_test && cat .dvc/config", observation="config empty"),
+        shell(3, "dvc remote modify myremote testoption testvalue"),
+        shell(4, "cd /tmp/case_test && cat .dvc/config", observation="config v1"),
+        submit(5),
+    ]
+    findings = ExecutionLoopDetector().detect(make_trajectory(steps))
+    assert not [f for f in findings if f.detail["pattern"] == "exact"]
+
+
+def test_exact_loop_suppressed_by_package_install():
+    """v4 invalid (pandas-61146): each retry followed a different repair attempt."""
+    steps = [
+        shell(0, "python -c 'import pandas'", observation="Traceback: import error"),
+        shell(1, "pip install -e . --no-build-isolation", observation="installed"),
+        shell(2, "rm /opt/envs/testbed/site-packages/_pandas_editable_loader.py"),
+        shell(3, "python -c 'import pandas'", observation="Traceback: import error"),
+        shell(4, "pip install pandas==2.2.3", observation="already satisfied"),
+        shell(5, "python -c 'import pandas'", observation="Traceback: import error"),
+        submit(6),
+    ]
+    findings = ExecutionLoopDetector().detect(make_trajectory(steps))
+    assert not [f for f in findings if f.detail["pattern"] == "exact"]
+
+
+def test_exact_loop_suppressed_by_cache_cleanup():
+    """v4 invalid (conan-2708): repro re-runs after clearing stale bytecode."""
+    steps = [
+        shell(0, "python reproduce_issue.py", observation="repro output"),
+        shell(1, "find . -name '__pycache__' -type d -exec rm -rf {} +"),
+        shell(2, "find . -name '*.pyc' -delete"),
+        shell(3, "python reproduce_issue.py", observation="repro output"),
+        shell(4, "python reproduce_issue.py", observation="repro output"),
+        submit(5),
+    ]
+    findings = ExecutionLoopDetector().detect(make_trajectory(steps))
+    assert not [f for f in findings if f.detail["pattern"] == "exact"]
+
+
+def test_repeated_identical_failures_with_no_intervention_still_fire():
+    """The widened gate must not swallow the real signal."""
+    steps = [
+        shell(i, "pytest tests/", observation="bash: pytest: command not found")
+        for i in range(3)
+    ]
+    findings = ExecutionLoopDetector().detect(make_trajectory(steps))
+    assert [f for f in findings if f.detail["pattern"] == "exact"]
+
+
+def test_reads_with_different_view_ranges_are_distinct_actions():
+    """v4 invalid (scrapy-5320): a full-file look and a drill-in differ.
+
+    Two views of one file through different ranges answer different questions;
+    grouping them by path alone made ordinary navigation read as a loop.
+    """
+    steps = [
+        read(0, "scrapy/utils/response.py", observation="full file"),
+        read(1, "scrapy/utils/response.py", observation="line 80 region",
+             view_range=[80, 120]),
+        shell(2, "python reproduce_issue.py", observation="repro output"),
+        read(3, "scrapy/utils/response.py", observation="line 80 region",
+             view_range=[80, 120]),
+        submit(4),
+    ]
+    findings = ExecutionLoopDetector().detect(make_trajectory(steps))
+    assert not [f for f in findings if f.detail["pattern"] == "exact"]
+
+
+def test_error_loop_ignores_warning_fingerprints():
+    """v4 invalid (django-json-api-1074): a repeated DeprecationWarning is noise.
+
+    Warnings recur on every run by design; they are not a failure the agent
+    fails to fix.
+    """
+    warning = "generic_error:DeprecationWarning: pkg_resources is deprecated as an API"
+    steps = [
+        shell(0, "pytest tests/", observation="DeprecationWarning: pkg_resources",
+              error_fp=warning),
+        read(1, "tests/test_utils.py"),
+        shell(2, "pytest tests/test_utils.py", observation="DeprecationWarning: pkg_resources",
+              error_fp=warning),
+        shell(3, "pytest -q", observation="DeprecationWarning: pkg_resources",
+              error_fp=warning),
+        submit(4),
+    ]
+    findings = ExecutionLoopDetector().detect(make_trajectory(steps))
+    assert not [f for f in findings if f.detail["pattern"] == "error"]
+
+
+def test_error_loop_suppressed_by_git_stash_baseline():
+    """v4 invalid (textual-3872): stash -> baseline run -> pop sits between failures.
+
+    The middle pytest failure ran on the *stashed original* code on purpose; a
+    baseline A/B check is diagnosis, and the state operation between the
+    failures is the tell.
+    """
+    steps = [
+        shell(0, "pytest tests/toggles/", observation="AssertionError: assert 4 == 0"),
+        read(1, "tests/toggles/test_radioset.py"),
+        shell(2, "git stash", observation="Saved working directory"),
+        shell(3, "pytest tests/toggles/", observation="AssertionError: assert 4 == 0"),
+        shell(4, "git stash pop", observation="restored"),
+        shell(5, "pytest tests/toggles/", observation="AssertionError: assert 4 == 0"),
+        submit(6),
+    ]
+    findings = ExecutionLoopDetector().detect(make_trajectory(steps))
+    assert not [f for f in findings if f.detail["pattern"] == "error"]
+
+
+def test_revert_cycle_ignores_a_stash_that_is_popped_back():
+    """v4 invalid (sqlglot-4110): stash -> baseline check -> pop is not a revert.
+
+    The work comes back, so nothing was discarded -- the same family as the
+    mne-tools ruling that introduced the stash-pop exclusion.
+    """
+    steps = [
+        edit(0, "src/pkg/gen.py", payload="v1"),
+        shell(1, "git stash", observation="Saved working directory"),
+        shell(2, "pytest tests/", observation="baseline output"),
+        shell(3, "git stash pop", observation="restored"),
+        edit(4, "src/pkg/gen.py", payload="v2"),
+        shell(5, "git stash", observation="Saved working directory"),
+        shell(6, "pytest tests/", observation="baseline output"),
+        shell(7, "git stash pop", observation="restored"),
+        submit(8),
+    ]
+    findings = ExecutionLoopDetector().detect(make_trajectory(steps))
+    assert not [f for f in findings if f.detail["pattern"] == "revert_cycle"]
+
+
+def test_revert_cycle_still_fires_on_stashes_that_are_never_restored():
+    """An unrestored stash really did throw the work away."""
+    steps = [
+        edit(0, "src/pkg/core.py", payload="v1"),
+        shell(1, "git stash", observation="Saved working directory"),
+        edit(2, "src/pkg/core.py", payload="v2"),
+        shell(3, "git stash", observation="Saved working directory"),
+        submit(4),
+    ]
+    findings = ExecutionLoopDetector().detect(make_trajectory(steps))
+    cycles = [f for f in findings if f.detail["pattern"] == "revert_cycle"]
+    assert cycles, "two unrecovered discards of one file is thrashing"
+
+
+def test_exact_loop_suppressed_by_package_install_intervening_only_once():
+    """One intervention inside the window is enough to break the loop claim."""
+    steps = [
+        shell(0, "python -c 'import pkg'", observation="Traceback: import error"),
+        shell(1, "pip install -e .", observation="installed"),
+        shell(2, "python -c 'import pkg'", observation="Traceback: import error"),
+        shell(3, "python -c 'import pkg'", observation="Traceback: import error"),
+        submit(4),
+    ]
+    findings = ExecutionLoopDetector().detect(make_trajectory(steps))
+    assert not [f for f in findings if f.detail["pattern"] == "exact"]
+
+
 def test_error_only_loop_survives_higher_exact_threshold():
     steps = [
         shell(i, "pytest", observation="bash: pytest: command not found")
@@ -543,7 +713,14 @@ def test_iteration_cap_is_flagged():
 def test_patch_touching_only_scratch_is_flagged():
     patch = "+++ b/reproduce_issue.py\n+++ b/final_verification.py\n"
     trajectory = make_trajectory(
-        [edit(0, "reproduce_issue.py"), submit(1)], model_patch=patch
+        [
+            edit(0, "reproduce_issue.py", verb="create",
+                 observation="File created successfully at: /workspace/reproduce_issue.py"),
+            edit(1, "final_verification.py", verb="create",
+                 observation="File created successfully at: /workspace/final_verification.py"),
+            submit(2),
+        ],
+        model_patch=patch,
     )
     findings = TerminationAnomalyDetector().detect(trajectory)
     assert [f for f in findings if f.detail["pattern"] == "patch_ignores_source"]
@@ -553,6 +730,23 @@ def test_patch_touching_source_is_not_flagged():
     patch = "+++ b/src/pkg/core.py\n+++ b/reproduce_issue.py\n"
     trajectory = make_trajectory(
         [edit(0, "src/pkg/core.py"), submit(1)], model_patch=patch
+    )
+    findings = TerminationAnomalyDetector().detect(trajectory)
+    assert not [f for f in findings if f.detail["pattern"] == "patch_ignores_source"]
+
+
+def test_patch_ignores_source_believes_a_modified_repo_file_over_its_name():
+    """v4 invalid (pre-commit-hooks-274): check_yaml.py is the repo's own module.
+
+    ``pre_commit_hooks/check_yaml.py`` matches the scratch regex's ``check[_-]``
+    prefix, but the agent modified it with a successful str_replace and shipped
+    it in the patch -- a modified pre-existing file is real source, whatever it
+    is named.  The scratch-name guess must never override observed modification.
+    """
+    patch = "+++ b/pre_commit_hooks/check_yaml.py\n"
+    trajectory = make_trajectory(
+        [edit(0, "pre_commit_hooks/check_yaml.py", payload="v1"), submit(1)],
+        model_patch=patch,
     )
     findings = TerminationAnomalyDetector().detect(trajectory)
     assert not [f for f in findings if f.detail["pattern"] == "patch_ignores_source"]

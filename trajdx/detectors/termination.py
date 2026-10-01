@@ -19,7 +19,8 @@ from trajdx.detectors.base import (
     Tier,
     register_detector,
 )
-from trajdx.heuristics import is_test_or_scratch
+from trajdx.detectors.verification import created_scripts
+from trajdx.heuristics import is_scratch_named, is_test_tree_file, repo_relative
 from trajdx.schema import StepKind, Trajectory
 
 
@@ -88,12 +89,66 @@ class TerminationAnomalyDetector(Detector):
         ]
 
     # ------------------------------------------------- patch misses the code
+    def _is_non_source(self, trajectory: Trajectory, path: str) -> bool:
+        """Could this patched file possibly be library source the agent changed?
+
+        Three tests, in decreasing order of reliability:
+
+        1. the file lives under a test tree (``tests/``, ``*_test.py``...) --
+           tree placement is authoritative;
+        2. the agent created the file this run and it is a *script* --
+           what the agent brought into existence as a runnable probe is
+           tooling, whatever the name;
+        3. the name looks like a throwaway script and the agent never
+           successfully *modified* it -- a name-only guess.
+
+        Test 3 alone misclassified ``pre_commit_hooks/check_yaml.py`` (the
+        repo's own hook module, modified by the agent and shipped in the patch)
+        as scratch; a successful ``str_replace`` proves the file pre-existed and
+        carries a real source change, so a modified file is never classified
+        non-source on its name alone (reviewed v4 false positive).
+
+        The creation test deliberately covers script extensions only: a task
+        can legitimately be fixed by *creating* files -- LSSTDESC__gcr-catalogs-419
+        asks for new catalog config YAMLs, and flagging that patch as
+        "ignoring source" was a reviewed false positive -- but a fresh
+        ``reproduce_issue.py``-style script is never the fix.
+        """
+        p = repo_relative(path)
+        if is_test_tree_file(p):
+            return True
+        if p in created_scripts(trajectory):
+            return True
+        if p in self._modified_files(trajectory):
+            return False
+        return is_scratch_named(p)
+
+    @staticmethod
+    def _modified_files(trajectory: Trajectory) -> set[str]:
+        """Files the agent successfully changed with a non-create edit."""
+        from trajdx.detectors.verification import edit_was_rejected
+
+        out: set[str] = set()
+        for step in trajectory.steps:
+            if step.kind is not StepKind.EDIT or edit_was_rejected(step):
+                continue
+            if str(step.args.get("verb") or "") == "create":
+                continue
+            files = step.files_touched or (
+                (step.args["path"],) if step.args.get("path") else ()
+            )
+            for f in files:
+                p = repo_relative(f)
+                if p:
+                    out.add(p)
+        return out
+
     def _patch_ignores_source(self, trajectory: Trajectory) -> list[Finding]:
         """The only files touched are tests or throwaway repro scripts."""
         patched = trajectory.patch_files
         if not patched:
             return []
-        if not all(is_test_or_scratch(p) for p in patched):
+        if not all(self._is_non_source(trajectory, p) for p in patched):
             return []
         edit_steps = [
             idx for idx, s in enumerate(trajectory.steps) if s.kind is StepKind.EDIT

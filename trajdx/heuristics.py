@@ -252,6 +252,30 @@ _SCRATCH_FILE = re.compile(
 )
 
 
+def is_test_tree_file(path: str | None) -> bool:
+    """True for files under a test tree or named like tests.
+
+    Tree placement is the reliable half of the non-source test: a repo's own
+    ``tests/`` directory is a test tree no matter what the agent did to it.
+    """
+    if not path:
+        return False
+    return bool(_TEST_FILE.search(repo_relative(path)))
+
+
+def is_scratch_named(path: str | None) -> bool:
+    """True for files whose *name* looks like a throwaway script.
+
+    Name-based classification is the unreliable half: ``checker.py`` is real
+    source, ``check_yaml.py`` is a real pre-commit hook module -- and both
+    match.  Callers that can consult behaviour (was the file created or
+    modified during the run?) should prefer that evidence over this predicate.
+    """
+    if not path:
+        return False
+    return bool(_SCRATCH_FILE.search(repo_relative(path)))
+
+
 def is_test_or_scratch(path: str | None) -> bool:
     """True for files that are not part of the library source.
 
@@ -260,10 +284,7 @@ def is_test_or_scratch(path: str | None) -> bool:
     a naive edit count treats it as code churn and makes the run look like it
     edited heavily without testing.
     """
-    if not path:
-        return False
-    p = repo_relative(path)
-    return bool(_TEST_FILE.search(p) or _SCRATCH_FILE.search(p))
+    return is_test_tree_file(path) or is_scratch_named(path)
 
 
 #: Documentation and project configuration.  Reading these is orientation, not

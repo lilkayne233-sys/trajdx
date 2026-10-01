@@ -25,11 +25,14 @@ def shell(idx: int, command: str, observation: str = "ok", **kw) -> AgentStep:
     )
 
 
-def read(idx: int, path: str, observation: str = "content", **kw) -> AgentStep:
+def read(idx: int, path: str, observation: str = "content", view_range=None, **kw) -> AgentStep:
+    args = {"path": path, "verb": "view"}
+    if view_range is not None:
+        args["view_range"] = view_range
     return AgentStep(
         idx=idx,
         kind=StepKind.READ,
-        args={"path": path, "verb": "view"},
+        args=args,
         raw_action=f"view {path}",
         raw_tool="str_replace_editor",
         observation=observation,

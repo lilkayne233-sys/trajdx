@@ -147,6 +147,15 @@ class AgentStep:
             return f"edit:#{_short_hash(payload, 16)}"
         if self.kind is StepKind.SHELL:
             return f"{self.action_key}#{_short_hash(str(self.args.get('command', '')), 10)}"
+        if self.kind is StepKind.READ and self.args.get("view_range") is not None:
+            # Two views of the same file through different ranges are different
+            # actions: a full-file look and a drill-in to line 80 answer different
+            # questions.  Merging them made the exact-loop rule flag ordinary
+            # navigation (reviewed as a false positive on scrapy__scrapy-5320).
+            # Mirrors the observation_key precedent: region identity must not
+            # collide across regions.
+            payload = json.dumps(self.args["view_range"], separators=(",", ":"))
+            return f"{self.action_key}#{_short_hash(payload, 10)}"
         return self.action_key
 
     @property

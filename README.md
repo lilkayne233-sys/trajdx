@@ -12,13 +12,13 @@ SWE-bench 这类评测，agent 跑完一个任务只有两个结果：过了 / �
 - 单条轨迹检测约 3 ms
 - 支持 OpenHands 和 SWE-agent 两种日志格式
 
-当前状态：**全部测试通过（295 个），流水线可用；v4 轮复核覆盖 700 条轨迹上的 128 条 finding，整体精确率 92.2%——`termination_anomaly`（core）98.8%，`edit_error` / `redundant_read` / `verification_gap` 全对，`execution_loop` 扩样后跌到 30.8%（病灶已定位，见下文），`blind_search` 零命中。单条 experimental finding 别当结论读。**
+当前状态：**全部测试通过（306 个），流水线可用；v5 轮复核覆盖 700 条轨迹上的 122 条 finding，整体精确率 99.2%——`termination_anomaly`（core）81/81 全对，`edit_error` / `redundant_read` / `verification_gap` 全对，`execution_loop` 修复误报族后 5/6（剩 1 条灰区，见下文），`blind_search` 零命中。单条 experimental finding 别当结论读。**
 
 ## 快速上手
 
 ```bash
 pip install -e ".[dev]"
-pytest -q                                   # 295 个测试
+pytest -q                                   # 306 个测试
 
 python -m trajdx.cli detectors              # 有哪些规则
 python -m trajdx.cli adapters               # 支持哪些日志格式
@@ -50,13 +50,13 @@ python -m trajdx.cli findings data/raw/openhands_sample.jsonl --out data/labels/
 
 ## 规则，哪些可信？
 
-| 规则 | 检测什么 | 可信度现状（v4 轮复核，700 条轨迹） |
+| 规则 | 检测什么 | 可信度现状（v5 轮复核，700 条轨迹） |
 |---|---|---|
-| `termination_anomaly` | 结束异常：没提交、撞迭代上限、patch 忽略源码 | **core，79/80（98.8%）**，也是区分成功/失败最有效的信号 |
+| `termination_anomaly` | 结束异常：没提交、撞迭代上限、patch 忽略源码 | **core，81/81 全对**（`check_yaml.py` scratch 误分类已修复），也是区分成功/失败最有效的信号 |
 | `edit_error` | 连续被编辑工具拒绝（agent 与编辑器搏斗） | **12/12 全对** |
 | `redundant_read` | 反复读同样内容 | **6/6 全对** |
 | `verification_gap` | 最终修改后没验证 | **16/16 全对**（v4 修复了「创建验证脚本被计为源码编辑」的病灶） |
-| `execution_loop` | 重复动作、重复报错、丢弃-重贴循环 | **4/13（30.8%）**：v4 扩样暴露出 exact/error/revert_cycle 三个子模式都把「修改后复跑」「A/B 基线检查点」当成了循环，这是下一个要修的病灶 |
+| `execution_loop` | 重复动作、重复报错、丢弃-重贴循环 | **5/6（83.3%）**：v5 修复了把「修改后复跑」「A/B 基线检查点」「stash 暂存-恢复」当循环的误报族；剩 1 条灰区残留（见下文） |
 | `localization_failure` | 改错了文件（与 gold patch 对照） | 有外部真值背书（区分度第二高），无法用标注验证，停在 experimental |
 | `blind_search` | 盲目搜索 | 加入收敛判据后 700 条语料零命中——不冤枉人，但也还没积累样本 |
 | `weak_verification` | 编辑多而验证少 | 700 条里首条命中，1/1 判对；仍是群体信号，个体判准待积累 |
@@ -66,43 +66,46 @@ python -m trajdx.cli findings data/raw/openhands_sample.jsonl --out data/labels/
 
 下面两张表是上表「可信度现状」的依据，全部可复现。
 
-### 表 1：v4 轮独立 AI 复核的精确率（128 条 finding，700 条轨迹）
+### 表 1：v5 轮独立 AI 复核的精确率（122 条 finding，700 条轨迹）
 
 这张表由下面的命令直接生成，不是手写的；测试会校验两份 README 与脚本输出逐字一致。**先看 n 再看精确率**：`n=0`（显示为「—」）表示这条规则在该轮没有命中样本，不是 100% 准，两者绝不能混读。
 
 ```bash
 python scripts/evaluate.py --raw data/raw/openhands_sample_v4.jsonl \
-  --labels data/labels/reviewed_ai_identity_v4.jsonl --markdown
+  --labels data/labels/reviewed_ai_identity_v5.jsonl --markdown
 ```
 
 | Detector | Tier | Precision | n |
 |---|---|---|---|
 | `edit_error` | experimental | 100.0% | 12 |
 | `redundant_read` | experimental | 100.0% | 6 |
+| `termination_anomaly` | core | 100.0% | 81 |
 | `verification_gap` | experimental | 100.0% | 16 |
 | `weak_verification` | experimental | 100.0% | 1 |
-| `termination_anomaly` | core | 98.8% | 80 |
-| `execution_loop` | experimental | 30.8% | 13 |
+| `execution_loop` | experimental | 83.3% | 6 |
 | `blind_search` | experimental | — | 0 |
 | `environment_stuck` | experimental | — | 0 |
 | `localization_failure` | experimental | — | 0 |
-| **overall** | | **92.2%** | **128** |
+| **overall** | | **99.2%** | **122** |
 
-**复核口径**：`data/labels/reviewed_ai_identity_v4.jsonl` 覆盖 700 条轨迹（原 300 条评测样本 + 从 4,096 条池子里按结果分层补抽的 400 条，`scripts/expand_sample.py`）上当前代码产出的全部 128 条 finding。复核包屏蔽任务结局，每条带 run/证据签名与代码、原始数据哈希；**它是 AI 复核不是人工标注，也不是独立留出集：每条都标着 `reviewer_type=ai`、`human_verified=false`**。其中 70 条是本轮全量新判，58 条是同签名沿用——规则没改、finding 一字不差（run_id、detector、finding_signature 三者全同）的判决才允许沿用，且在标签里逐条标 `adopted_verdict=true` 可审计。规则一改、签名一变，沿用自动失效。
+**复核口径**：`data/labels/reviewed_ai_identity_v5.jsonl` 覆盖 700 条轨迹（原 300 条评测样本 + 从 4,096 条池子里按结果分层补抽的 400 条，`scripts/expand_sample.py`）上当前代码产出的全部 122 条 finding。复核包屏蔽任务结局，每条带 run/证据签名与代码、原始数据哈希；**它是 AI 复核不是人工标注，也不是独立留出集：每条都标着 `reviewer_type=ai`、`human_verified=false`**。122 条判决中 119 条是同签名沿用（v4 判决，finding 一字不差才允许沿用，逐条标 `adopted_verdict=true` 可审计），3 条是本轮新判——修复抑制了 v4 的 9 条误报 finding，其判决随之失效（stale，报告但不计分）。
 
-严格门禁（n≥20、core 覆盖率≥80%、点估计≥88%）按这批复核标签**通过**：`termination_anomaly` 80 条、98.8%、覆盖 100%。
+严格门禁（n≥20、core 覆盖率≥80%、点估计≥88%）按这批复核标签**通过**：`termination_anomaly` 81 条、100%、覆盖 100%。
 
-这是复核闭环跑出来的**诚实结果，不是一个被达成的目标**：`execution_loop` 在扩样后精确率崩到 30.8%，如实降级记录而不是 hiding；命中假设的规则被保留，其余标为「未证实」。
+这是复核闭环跑出来的**诚实结果，不是一个被达成的目标**：命中假设的规则被保留，其余标为「未证实」，而不是悄悄调到数字好看为止。
 
-**当前已知病灶（v4 轮判决定位，下一轮修）**：
-- `execution_loop/exact` 把「修复后复跑复现脚本」「不同 view_range 的文件导航」「状态检查点」都判成循环（9 条误报同族：重复命令之间有实质状态变更就不算循环）；
-- `execution_loop/error` 把 DeprecationWarning 级别的重复警告当失败、把「失败之间有实质排查」当空转；
-- `execution_loop/revert_cycle` 重现 stash 家族误报：`git stash → 基线验证 → git stash pop` 被当成「改了又撤销」——规则还看不到未来的 pop；
-- `termination_anomaly/patch_ignores_source` 的 scratch 正则把真源码 `pre_commit_hooks/check_yaml.py` 误分类（`check[_-]` 前缀，与 v3 修过的 `checker.py` 同族）。
+**v4 → v5 修了什么（9 条 v4 误报同型消失）**：
+- `execution_loop` 的干预门槛从「没编辑过」扩大为「没有任何状态变更」：`pip install`、`rm`、重建测试环境、`git stash` 基线切换之后重跑探针是在验证假设，不是循环（3 条 exact 误报消失）；
+- `execution_loop/error` 不再把重复出现的 `DeprecationWarning` 之类警告当失败（1 条误报消失），同样受新门槛保护（1 条 stash A/B 误报消失）；
+- `execution_loop/exact` 对 READ 步骤纳入 view_range：同一文件换范围翻是导航不是循环（2 条误报消失）；
+- `execution_loop/revert_cycle` 引入 stash 栈式配对：`stash → 基线验证 → pop` 的工作从未被丢弃，不算「改了又撤销」；未被 pop 的 stash（轨迹死在 stash 态）仍是真丢弃（1 条误报消失）；
+- `termination_anomaly/patch_ignores_source` 不再让 scratch 命名压过观察到的事实：被 `str_replace` 成功修改过的既有文件是真源码，`pre_commit_hooks/check_yaml.py` 这类模块不再被 `check[_-]` 前缀误伤（1 条误报消失）。
 
-v3 轮的 3 条 `verification_gap` 误报（创建 `edge_cases.py` 等任意名字的验证脚本被计为源码编辑）**已在本轮修复**：验证脚本的认定从看名字改为看行为（本轨迹自建 + 自运行的脚本），带 3 个真实错例回归测试。修复同时使 v3 一条 valid 判决（dask-6564）失效——那条判决本身把 step 97 创建的诊断脚本误读成了源码编辑，按修复后的统一定义不再成立。
+**有意保留的灰区**：`makhidkarun__traveller_pyroute-58`——同一 pytest 断言错误 3 次、间隙是 grep/read 排查。它与 v3 轮判 valid 的错误循环在结构上同型（只有读取介于失败之间），没有干净的语法判据能同时保留前者、排除后者；当前规则选择保留该 finding，其 v4 invalid 判决继续生效并被如实计入精确率。
 
-**修完规则必须重新复核，不能沿用判决——本轮就是这么做的。**
+**修复过程中记录的新教训**：`LSSTDESC__gcr-catalogs-419` 的任务本身就是「新增 catalog 配置文件」——agent 新建 yaml 正是正解，所以「agent 自建文件 = 工具」只对**脚本扩展名**成立，新建配置/文档可能是交付物本身。这条边界已写进 `patch_ignores_source` 的判定与测试。
+
+**修完规则必须重新复核，不能沿用判决——本轮沿用仅限签名完全一致的 finding。**
 
 ### 表 2：gold 通道——`localization_failure` 的区分度
 
@@ -134,7 +137,7 @@ python scripts/detector_profile.py     # 各规则命中量与步骤覆盖率
 python scripts/discrimination.py       # 各指标对 resolved 标签的 AUC
 ```
 
-**直说：WSR 不能预测失败。** 对 resolved/unresolved 标签的 Mann-Whitney AUC 只有 **0.520**——和抛硬币无异。把它当失败预测器是错的，所以文档和 CLI 严格把它描述成**效率指标**：它回答「这次运行有多少比例在原地打转」，不回答「这次运行会不会成功」。
+**直说：WSR 不能预测失败。** 对 resolved/unresolved 标签的 Mann-Whitney AUC 只有 **0.523**——和抛硬币无异。把它当失败预测器是错的，所以文档和 CLI 严格把它描述成**效率指标**：它回答「这次运行有多少比例在原地打转」，不回答「这次运行会不会成功」。
 
 真正携带信号的是「过程形状」类指标。下表由 `scripts/discrimination.py` 直接输出（AUC 的正类是*失败*，所以小于 0.5 表示「数值越低越容易失败」，反向后就大于 0.5）：
 
@@ -146,11 +149,11 @@ python scripts/discrimination.py       # 各指标对 resolved 标签的 AUC
 | `tests_per_source_edit` | 0.382 | **0.618** | 8.16 | 6.17 |
 | `test_run_ratio` | 0.402 | **0.598** | 0.2451 | 0.2192 |
 | `novel_observation_ratio` | 0.430 | **0.570** | 0.9269 | 0.9174 |
-| `wasted_step_ratio` | 0.520 | — | 0.0008 | 0.0017 |
+| `wasted_step_ratio` | 0.523 | — | 0.0008 | 0.0024 |
 
 一句话读法：**成功的运行更短、改的源码更少、每改一次测得更勤。** 区分度最强的是运行长度（`total_steps` 0.694），但那是症状不是病因；真正有行动价值的是 `source_edits` 与验证强度。
 
-`novel_observation_ratio`（新信息率）是本轮新增的指标：一条轨迹里产出「从未见过的观测」的步骤占比，直接从 `observation_key` 哈希算出，**不经过任何规则**。它比 WSR（0.520）强，但仍弱于验证强度类指标——诚实记录：观测新颖度有信号，但不是决定性的。
+`novel_observation_ratio`（新信息率）是本轮新增的指标：一条轨迹里产出「从未见过的观测」的步骤占比，直接从 `observation_key` 哈希算出，**不经过任何规则**。它比 WSR（0.523）强，但仍弱于验证强度类指标——诚实记录：观测新颖度有信号，但不是决定性的。
 
 口径说明：「测试次数」包含 `python -c` 现场探针——agent 现写代码跑一遍也算自我检查。不计这些探针的话，tests-per-edit 的区分度会更高一些，但那不是这里采用的口径。
 
@@ -261,7 +264,7 @@ trajdx/
 └── LICENSE                      # MIT
 ```
 
-数据目录的取舍是有意的：`data/raw/`、`data/gold/`、`data/reports/` 体积大且可由脚本复现，不进版本库；`data/labels/` 是**不可复现的复核结论**，必须入库。复跑评估必须有原始轨迹。v2/v3 旧标签仅可用 `--allow-legacy` 做历史对照；当前评估使用 `data/labels/reviewed_ai_identity_v4.jsonl`（v4 轮独立 AI 复核，700 条轨迹）。
+数据目录的取舍是有意的：`data/raw/`、`data/gold/`、`data/reports/` 体积大且可由脚本复现，不进版本库；`data/labels/` 是**不可复现的复核结论**，必须入库。复跑评估必须有原始轨迹。v2/v3 旧标签仅可用 `--allow-legacy` 做历史对照；当前评估使用 `data/labels/reviewed_ai_identity_v5.jsonl`（v5 轮独立 AI 复核，700 条轨迹）。
 
 ## 复跑评估
 
@@ -269,9 +272,9 @@ trajdx/
 # 当前复核标签：严格门禁 + 完整评估（700 条合并样本）
 # evaluate.py 每次都会重跑当前检测器，存储标签只用来对账，绝不直接计分
 python scripts/check_regression.py --raw data/raw/openhands_sample_v4.jsonl \
-  --labels data/labels/reviewed_ai_identity_v4.jsonl
+  --labels data/labels/reviewed_ai_identity_v5.jsonl
 python scripts/evaluate.py --raw data/raw/openhands_sample_v4.jsonl \
-  --labels data/labels/reviewed_ai_identity_v4.jsonl
+  --labels data/labels/reviewed_ai_identity_v5.jsonl
 
 # 补抽扩展样本（从池子里抽与已有样本不重叠的轨迹）
 python scripts/expand_sample.py --n 400 --seed 20261001 \
@@ -294,6 +297,6 @@ python scripts/validate_pool.py --input data/raw/openhands_pool.jsonl \
 
 gold 那条依赖 gitignore 的 `data/raw/` 与 `data/gold/`，所以裸克隆里跑不了；`tests/test_gold.py` 对应的检查在没数据时自动跳过，不假装通过。
 
-严格门禁对 `reviewed_ai_identity_v4.jsonl` 当前是**通过**的；测试套件同时会校验它拒绝无身份的旧标签。**verdict 永远不能自动迁移来制造通过：证据变了（规则改了、finding 换了身份）就必须重新复核。** 唯一的例外是 `finalize_review.py --adopt`：只沿用 run_id、detector、finding_signature 三者全同（finding 一字不差）的旧判决，逐条标 `adopted_verdict=true` 可审计。新判决必须保留 `finding_id`、`run_id`、`finding_signature`。
+严格门禁对 `reviewed_ai_identity_v5.jsonl` 当前是**通过**的；测试套件同时会校验它拒绝无身份的旧标签。**verdict 永远不能自动迁移来制造通过：证据变了（规则改了、finding 换了身份）就必须重新复核。** 唯一的例外是 `finalize_review.py --adopt`：只沿用 run_id、detector、finding_signature 三者全同（finding 一字不差）的旧判决，逐条标 `adopted_verdict=true` 可审计。新判决必须保留 `finding_id`、`run_id`、`finding_signature`。
 
 JSONL 加载 API 支持 `iter_file` 与读取前生效的 `limit`；JSON 数组文件仍需整份解析。`validate_pool.py` 的样本不代表全语料，不产生 precision/recall，也不能给框架排名。

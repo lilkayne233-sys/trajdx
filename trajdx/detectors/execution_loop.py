@@ -20,10 +20,13 @@ two alternate:
 
 The load-bearing condition
 --------------------------
-All three patterns are gated on the same rule: **nothing may have been edited
-between the repetitions**.  Re-running a command after changing a file is how an
-agent tests a hypothesis, and the first version of this detector fired on that
-constantly.
+All four patterns are gated on the same rule: **nothing may have changed
+between the repetitions**.  Re-running a command after changing a file is how
+an agent tests a hypothesis, and the first version of this detector fired on
+that constantly; the v4 review widened the gate the same way -- ``pip install``,
+``rm``, rebuilding a fixture directory, or a ``git stash`` baseline swap between
+repetitions re-samples a different world just as much as an edit does, so all
+state-changing actions (edit or shell mutation denylist) veto a finding.
 
 Measured on annotated findings, the distinction is stark:
 
@@ -69,11 +72,39 @@ _NON_ACTION_KINDS = frozenset({StepKind.THOUGHT, StepKind.PLAN})
 #: positive when two cancellations were counted as a repeated failing command.
 _INTERRUPT_COMMAND = re.compile(r"^(?:c[-_ ]?c|\^c|ctrl[-_ +]?c)$", re.IGNORECASE)
 
+#: Commands that mutate the environment or the working tree.  A repetition
+#: that follows one of these is a *re-test after an intervention*, not a loop:
+#: the v4 review rejected three exact-loop findings where the agent re-ran a
+#: probe after ``pip install`` / ``rm`` / rebuilding a fixture directory, and
+#: one error-loop finding where ``git stash`` -> baseline run -> ``git stash pop``
+#: sat between two identical test failures.  The denylist errs toward common
+#: mutators; anything it misses keeps the old (stricter) behaviour of firing.
+_MUTATING_COMMAND = re.compile(
+    r"""(?x)
+      (?:^|[\s;&|(]) (?:rm|rmdir|mv|cp|ln|mkdir|touch|chmod|chown|tee) (?:\s|$)
+    | (?:^|[\s;&|(]) sed \s+ (?:[^;|&]*\s)? -[a-zA-Z]*i
+    | (?:^|[\s;&|(]) git \s+ (?:checkout|restore|reset|stash|commit|add|apply|merge
+                              |rebase|clean|cherry-pick|revert|rm|am|pull|push) (?:\s|$)
+    | (?:^|[\s;&|(]) (?:pip3?|pipx|conda|npm|yarn|uv) \s+ (?:install|uninstall|remove|upgrade) (?:\s|$)
+    | (?:^|[\s;&|(]) python3? \s+ setup\.py \s+ (?:install|develop) (?:\s|$)
+    | -{1,2}delete\b
+    | -exec\s+rm\b
+    | (?:^|[\s;&|(]) dvc \s+ (?:init|add|remove) (?:\s|$)
+    """
+)
+
+#: The signature part of an error fingerprint when the best signal the output
+#: offered was a Python warning (``generic_error:DeprecationWarning: ...``).
+#: Warnings repeat on every run by design; treating them as a recurring failure
+#: flagged normal exploration (reviewed as a false positive on
+#: django-json-api__django-rest-framework-json-api-1074).
+_WARNING_FINGERPRINT = re.compile(r"^[A-Za-z_][\w.]*Warning:")
+
 #: Commands that roll the working tree back, i.e. *discard* the agent's own
-#: edits.  ``git stash pop``/``apply`` restore discarded work instead, so they
-#: must not count: an edit -> stash -> edit -> stash-pop sequence is the agent
-#: testing the pristine tree, which is diagnosis, not thrashing (reviewed as a
-#: false positive on mne-tools__mne-python-12080).
+#: edits.  ``git stash`` opens a stash entry; whether it counts as a discard is
+#: decided later by pairing it against a ``git stash pop``/``apply`` (see
+#: :meth:`ExecutionLoopDetector._revert_cycles`) -- a stash that comes back is
+#: pristine-tree diagnosis, not thrashing.
 _DISCARD_COMMAND = re.compile(
     r"""(?x)
       (?:^|[\s;&|(]) git \s+ (?:checkout|restore) (?:\s|$)
@@ -82,9 +113,28 @@ _DISCARD_COMMAND = re.compile(
     """
 )
 
+_STASH_OPEN_COMMAND = re.compile(
+    r"(?:^|[\s;&|(]) git \s+ stash (?:$|\s+(?!pop\b|apply\b))", re.VERBOSE
+)
+
+_STASH_CLOSE_COMMAND = re.compile(
+    r"(?:^|[\s;&|(]) git \s+ stash \s+ (?:pop|apply|branch)\b", re.VERBOSE
+)
+
 
 def _is_discard_command(command: str) -> bool:
     return bool(command) and _DISCARD_COMMAND.search(command) is not None
+
+
+def _is_mutating_command(command: str) -> bool:
+    return bool(command) and _MUTATING_COMMAND.search(command) is not None
+
+
+def _is_warning_fingerprint(fingerprint: str | None) -> bool:
+    if not fingerprint:
+        return False
+    _, _, signature = fingerprint.partition(":")
+    return _WARNING_FINGERPRINT.match(signature.strip()) is not None
 
 
 def _is_interrupt(step: AgentStep) -> bool:
@@ -125,17 +175,39 @@ class ExecutionLoopDetector(Detector):
         self.require_no_intervening_edit = require_no_intervening_edit
 
     # ---------------------------------------------------------------- helpers
-    def _edited_between(self, trajectory: Trajectory, lo: int, hi: int) -> bool:
-        """Did the agent modify any file between the first and last repetition?
+    def _state_changed_between(
+        self, trajectory: Trajectory, span: list[int], *, include_repeats: bool = True
+    ) -> bool:
+        """Did the agent change *anything* between the first and last repetition?
 
-        This single condition decides whether a repetition is waste.  Re-running
-        a command *after changing something* is how an agent tests a hypothesis;
-        re-running it with nothing changed is the only case where the step
-        provably bought no information.
+        The v1 gate only vetoed edits, because re-running a command after
+        changing a file is how an agent tests a hypothesis.  The v4 review
+        widened the same principle: a repetition that follows *any* state
+        change -- ``pip install``, ``rm``, rebuilding a fixture directory, a
+        ``git stash`` baseline swap -- re-samples a different world, so it buys
+        information whether or not a file was edited.  Only edits and shell
+        commands on the mutation denylist count; reads, greps, test runs and
+        probes do not.
+
+        By default the repeated steps themselves count, which is what the
+        oscillation pattern needs (an A-B alternation of edit <-> view *is*
+        ordinary debugging and was always suppressed).  The exact and error
+        patterns pass ``include_repeats=False`` so that a command whose *own*
+        execution mutates state (a failing installer run three times) stays a
+        loop candidate.  Edit steps always count: a successful edit rewrites
+        the tree, and a failed one is the ``edit_error`` detector's territory,
+        never a reason to re-arm the loop rules here.
         """
-        return any(
-            trajectory.steps[i].kind is StepKind.EDIT for i in range(lo, hi + 1)
-        )
+        repeats = set() if include_repeats else set(span)
+        for i in range(span[0], span[-1] + 1):
+            step = trajectory.steps[i]
+            if step.kind is StepKind.EDIT:
+                return True
+            if step.kind is StepKind.SHELL and i not in repeats and _is_mutating_command(
+                str(step.args.get("command") or "")
+            ):
+                return True
+        return False
 
     # ---------------------------------------------------------------- detect
     def detect(self, trajectory: Trajectory) -> list[Finding]:
@@ -181,8 +253,8 @@ class ExecutionLoopDetector(Detector):
         findings: list[Finding] = []
         for key, positions in groups.items():
             for span in dense_groups(positions, self.min_repeats, self.window):
-                if self.require_no_intervening_edit and self._edited_between(
-                    trajectory, span[0], span[-1]
+                if self.require_no_intervening_edit and self._state_changed_between(
+                    trajectory, span, include_repeats=False
                 ):
                     continue
                 wasted = tuple(span[1:])  # the first attempt was legitimate
@@ -235,14 +307,16 @@ class ExecutionLoopDetector(Detector):
         """Same error fingerprint recurring while the agent keeps changing tactics."""
         groups: dict[str, list[int]] = defaultdict(list)
         for idx, step in enumerate(trajectory.steps):
-            if step.error_fp and not _is_interrupt(step):
+            if step.error_fp and not _is_interrupt(step) and not _is_warning_fingerprint(
+                step.error_fp
+            ):
                 groups[step.error_fp].append(idx)
 
         findings: list[Finding] = []
         for fingerprint, positions in groups.items():
             for span in dense_groups(positions, self.error_repeats, self.error_window):
-                if self.require_no_intervening_edit and self._edited_between(
-                    trajectory, span[0], span[-1]
+                if self.require_no_intervening_edit and self._state_changed_between(
+                    trajectory, span, include_repeats=False
                 ):
                     continue
                 wasted = tuple(span[1:])
@@ -294,8 +368,8 @@ class ExecutionLoopDetector(Detector):
                 j += 2
             if cycles >= self.oscillate_cycles and i not in reported:
                 span = list(range(i, min(i + cycles * 2, n)))
-                if self.require_no_intervening_edit and self._edited_between(
-                    trajectory, span[0], span[-1]
+                if self.require_no_intervening_edit and self._state_changed_between(
+                    trajectory, span
                 ):
                     i += 1
                     continue
@@ -333,7 +407,25 @@ class ExecutionLoopDetector(Detector):
         recurs (so the error pattern is silent), and an edit/revert alternation
         reads as ordinary A-B oscillation between unlike actions.  A revert
         names no path, so it pairs with whatever was edited just before it.
+
+        A ``git stash`` only counts as a discard when the stash entry is never
+        restored: the v4 review rejected a finding where the agent stashed its
+        work, ran a baseline check on the pristine tree, and popped the stash
+        back -- stack-paired stashes are diagnosis, not thrashing.  A stash
+        left unrestored (e.g. a run cut off while stashed) *did* lose the work
+        and remains a discard.
         """
+        restored: set[int] = set()
+        pending_stash: list[int] = []
+        for idx, step in enumerate(trajectory.steps):
+            if step.kind is not StepKind.SHELL:
+                continue
+            command = str(step.args.get("command") or "")
+            if _STASH_OPEN_COMMAND.search(command):
+                pending_stash.append(idx)
+            elif _STASH_CLOSE_COMMAND.search(command) and pending_stash:
+                restored.add(pending_stash.pop())
+
         events: list[tuple[int, str, str | None]] = []
         for idx, step in enumerate(trajectory.steps):
             if step.kind is StepKind.EDIT:
@@ -342,7 +434,7 @@ class ExecutionLoopDetector(Detector):
                 )
                 if files:
                     events.append((idx, "edit", repo_relative(files[0])))
-            elif step.kind is StepKind.SHELL and _is_discard_command(
+            elif step.kind is StepKind.SHELL and idx not in restored and _is_discard_command(
                 str(step.args.get("command") or "")
             ):
                 events.append((idx, "revert", None))

@@ -23,7 +23,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 RAW = ROOT / "data" / "raw" / "openhands_sample.jsonl"
 RAW_V4 = ROOT / "data" / "raw" / "openhands_sample_v4.jsonl"
-V4_LABELS = "data/labels/reviewed_ai_identity_v4.jsonl"
+V5_LABELS = "data/labels/reviewed_ai_identity_v5.jsonl"
 
 
 needs_raw = pytest.mark.skipif(not RAW.exists(), reason="raw trajectories are gitignored")
@@ -61,7 +61,7 @@ def test_readme_detector_table_matches_evaluate():
             [
                 "scripts/evaluate.py",
                 "--raw", "data/raw/openhands_sample_v4.jsonl",
-                "--labels", V4_LABELS,
+                "--labels", V5_LABELS,
                 "--markdown",
             ]
         ).splitlines()
@@ -93,7 +93,7 @@ def test_readme_precision_claims_match_sample_size():
         [
             "scripts/evaluate.py",
             "--raw", "data/raw/openhands_sample_v4.jsonl",
-            "--labels", V4_LABELS,
+            "--labels", V5_LABELS,
             "--markdown",
         ]
     )
