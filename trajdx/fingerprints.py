@@ -28,7 +28,7 @@ def clean_output(text: str | None) -> str:
     """Strip ANSI colours and carriage-return progress redraws."""
     if not text:
         return ""
-    out = _ANSI.sub("", text)
+    out = _ANSI.sub("", text).replace("\r\n", "\n")
     if "\r" in out:
         out = _CR_PROGRESS.sub("", out)
     return out
@@ -131,7 +131,16 @@ _TRACEBACK_LAST = re.compile(
 _LOCATION = re.compile(r"([\w./\\+-]+\.\w+):\d+(?::\d+)?")
 _HEX_ADDR = re.compile(r"0x[0-9a-fA-F]+")
 _QUOTED_PATH = re.compile(r"(['\"])(/[^'\"]*?)/([^/'\"]+)\1")
-_EXIT_CODE = re.compile(r"\bexit code[:= ]+(\d+)\b", re.I)
+_EXIT_CODE = re.compile(r"\bexit code[:= ]+([+-]?\d+)\b", re.I)
+# Tool status footers are authoritative; source dumps may mention other codes.
+_EXIT_FOOTER = re.compile(
+    r"^[ \t]*(?:"
+    r"\[?exit code[:= ]+([+-]?\d+)\]?"
+    r"|\[The command completed with exit code ([+-]?\d+)\.\]"
+    r"|Process exited with code ([+-]?\d+)"
+    r")[ \t]*\s*\Z",
+    re.I | re.M,
+)
 
 
 def _normalize_signature(text: str, limit: int = 160) -> str:
@@ -251,6 +260,9 @@ def classify_error(observation: str | None, *, exit_code: int | None = None) -> 
 def extract_exit_code(observation: str | None) -> int | None:
     """Best-effort exit status from a shell observation, if the tool reports one."""
     text = clean_output(observation)
+    footer = _EXIT_FOOTER.search(text)
+    if footer:
+        return int(next(code for code in footer.groups() if code is not None))
     match = _EXIT_CODE.search(text)
     if match:
         return int(match.group(1))

@@ -42,6 +42,8 @@ def main() -> int:
     ap.add_argument("--raw", type=Path, default=evaluate.DEFAULT_RAW)
     ap.add_argument("--labels", default="data/labels/labelled_v3_*.jsonl")
     ap.add_argument("--target", type=float, default=0.88)
+    ap.add_argument("--min-samples", type=int, default=20)
+    ap.add_argument("--min-coverage", type=float, default=0.8)
     args = ap.parse_args()
 
     if not args.raw.exists():
@@ -63,6 +65,9 @@ def main() -> int:
     print("-" * 72)
 
     problems: list[str] = []
+    live, duplicates = evaluate.live_findings(args.raw)
+    if duplicates:
+        problems.append(f"duplicate finding identities: {duplicates}")
     for name, cls in sorted(REGISTRY.items()):
         if cls.tier is not Tier.CORE:
             continue
@@ -76,6 +81,12 @@ def main() -> int:
             print(f"{name:24} {0:4d} {0:6d} {0:8d} {'—':>8}  NO SAMPLE")
             continue
         precision = valid / n
+        live_n = sum(row["detector"] == name for row in live.values())
+        coverage = n / live_n if live_n else 0.0
+        if n < args.min_samples:
+            problems.append(f"{name}: only {n} labels, need {args.min_samples}")
+        if coverage < args.min_coverage:
+            problems.append(f"{name}: labelled coverage {coverage:.1%} < {args.min_coverage:.1%}")
         ok = precision >= args.target
         if not ok:
             problems.append(

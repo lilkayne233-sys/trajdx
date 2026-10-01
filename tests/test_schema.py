@@ -86,6 +86,75 @@ def test_failed_property_sees_both_signals():
     assert not AgentStep(idx=0, kind=StepKind.SHELL, exit_code=0).failed
 
 
+def test_patch_files_mixed_blocks_include_deletion_rename_and_binary():
+    patch = (
+        "diff --git a/src/deleted.py b/src/deleted.py\n"
+        "deleted file mode 100644\n--- a/src/deleted.py\n+++ /dev/null\n"
+        "@@ -1 +0,0 @@\n-old\n"
+        "diff --git a/src/core.py b/src/core.py\n"
+        "--- a/src/core.py\n+++ b/src/core.py\n@@ -1 +1 @@\n-old\n+new\n"
+        "diff --git a/src/old.py b/src/renamed.py\n"
+        "similarity index 100%\nrename from src/old.py\nrename to src/renamed.py\n"
+        "diff --git a/assets/logo.png b/assets/logo.png\n"
+        "Binary files a/assets/logo.png and b/assets/logo.png differ\n"
+    )
+    assert patch_files(patch) == [
+        "src/deleted.py", "src/core.py", "src/renamed.py", "assets/logo.png"
+    ]
+
+
+def test_patch_files_plain_deletion_and_quoted_paths():
+    assert patch_files("--- a/src/gone.py\n+++ /dev/null\n") == ["src/gone.py"]
+    patch = (
+        'diff --git "a/src/old name.py" "b/src/new name.py"\n'
+        'rename from src/old name.py\nrename to src/new name.py\n'
+        'diff --git a/src/new.py b/src/new.py\n--- /dev/null\n+++ b/src/new.py\n'
+    )
+    assert patch_files(patch) == ["src/new name.py", "src/new.py"]
+
+
+def test_patch_files_plain_multi_file_diff_ignores_header_shaped_content():
+    patch = (
+        "--- a/src/first.py\n+++ b/src/first.py\n@@ -1 +1 @@\n"
+        "--- a/not_a_file.py\n+++ b/not_a_file.py\n"
+        "--- a/src/deleted.py\n+++ /dev/null\n@@ -1 +0,0 @@\n-deleted\n"
+        "--- /dev/null\n+++ b/src/added.py\n@@ -0,0 +1 @@\n+added\n"
+    )
+    assert patch_files(patch) == ["src/first.py", "src/deleted.py", "src/added.py"]
+
+
+def test_edit_exact_key_preserves_real_paths_and_ranges():
+    a = edit(0, "/tmp/run123/core.py", payload="same")
+    b = edit(1, "/tmp/run456/core.py", payload="same")
+    assert a.action_key == b.action_key
+    assert a.exact_key != b.exact_key
+    b.args["path"] = a.args["path"]
+    a.args["range"] = "10:20"
+    b.args["range"] = "30:40"
+    assert a.exact_key != b.exact_key
+
+
+def test_edit_exact_key_is_canonical_and_delimiter_safe():
+    a = edit(0, "src/core.py", payload="b|c")
+    a.args["old_str"] = "a"
+    b = edit(1, "src/core.py", payload="c")
+    b.args["old_str"] = "a|b"
+    assert a.exact_key != b.exact_key
+    b.args = dict(reversed(list(a.args.items())))
+    b.args["file_text"] = None
+    assert a.exact_key == b.exact_key
+    b.args["insert_line"] = 10
+    a.args["insert_line"] = "10"
+    assert a.exact_key != b.exact_key
+
+
+def test_failed_property_includes_error_kind_without_fingerprint():
+    step = AgentStep(idx=0, kind=StepKind.SHELL, error_kind="nonzero_exit")
+    assert step.error_fp is None
+    assert step.failed
+    assert make_trajectory([step]).failed_steps == [step]
+
+
 def test_trajectory_roundtrip_is_lossless():
     trajectory = make_trajectory(
         [thought(0), read(1, "src/a.py"), edit(2, "src/a.py"), submit(3)],

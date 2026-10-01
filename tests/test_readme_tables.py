@@ -58,7 +58,7 @@ def test_readme_detector_table_matches_evaluate():
             [
                 "scripts/evaluate.py",
                 "--labels", V3_LABELS,
-                "--markdown",
+                "--markdown", "--allow-legacy", "--allow-legacy",
             ]
         ).splitlines()
         if line.strip()
@@ -89,7 +89,7 @@ def test_readme_precision_claims_match_sample_size():
         [
             "scripts/evaluate.py",
             "--labels", V3_LABELS,
-            "--markdown",
+            "--markdown", "--allow-legacy",
         ]
     )
     rows = re.findall(r"^\| `(\w+)` \| (\w+) \| ([\d.]+%|—) \| (\d+) \|$", output, re.M)
@@ -151,21 +151,13 @@ def test_readme_process_shape_matches_discrimination():
 
 
 @needs_raw
-def test_core_detectors_clear_the_precision_bar():
-    """The tier promise is enforced by a script; run it from the suite too.
-
-    `tier=core` is what `replay` shows by default and what the README calls
-    validated, so a core rule that has slipped below the bar -- or that has no
-    validated sample at all -- must break the build rather than the docs.
-    """
+def test_strict_gate_rejects_unversioned_repository_labels():
+    """Historical labels cannot establish current semantics without new review."""
     result = subprocess.run(
         [sys.executable, "scripts/check_regression.py"],
         cwd=ROOT,
         capture_output=True,
         text=True,
     )
-    assert result.returncode == 0, (
-        "core-tier precision regressed:\n"
-        + result.stdout
-        + result.stderr
-    )
+    assert result.returncode == 1, "legacy-only labels must not pass the strict gate"
+    assert "no stored label matches" in result.stderr

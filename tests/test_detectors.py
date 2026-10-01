@@ -17,6 +17,7 @@ from trajdx.detectors.termination import TerminationAnomalyDetector
 from trajdx.detectors.verification import (
     VerificationGapDetector,
     WeakVerificationDetector,
+    source_edit_events,
     source_edits,
 )
 from trajdx.metrics import aggregate, attribute_waste, wasted_step_ratio
@@ -36,6 +37,58 @@ def test_exact_loop_detects_identical_failing_command():
     assert exact, "three identical failing commands is a loop"
     assert exact[0].wasted_steps == (1, 2), "the first attempt is not waste"
     assert exact[0].severity is Severity.HIGH
+
+
+def test_exact_and_error_loop_for_same_occurrences_is_reported_once():
+    steps = [
+        shell(i, "pytest", observation="bash: pytest: command not found")
+        for i in range(3)
+    ]
+    findings = ExecutionLoopDetector().detect(make_trajectory(steps))
+    assert [f.detail["pattern"] for f in findings] == ["exact"]
+
+
+def test_error_only_loop_survives_higher_exact_threshold():
+    steps = [
+        shell(i, "pytest", observation="bash: pytest: command not found")
+        for i in range(3)
+    ]
+    findings = ExecutionLoopDetector(min_repeats=5).detect(make_trajectory(steps))
+    assert [f.detail["pattern"] for f in findings] == ["error"]
+    assert findings[0].detail["occurrences"] == [0, 1, 2]
+
+
+def test_error_only_loop_survives_distinct_exact_keys_with_same_coarse_key():
+    steps = [
+        shell(i, f"python /tmp/run{i}/probe.py", observation="ValueError: broken")
+        for i in range(3)
+    ]
+    assert len({s.action_key for s in steps}) == 1
+    assert len({s.exact_key for s in steps}) == 3
+    findings = ExecutionLoopDetector().detect(make_trajectory(steps))
+    assert [f.detail["pattern"] for f in findings] == ["error"]
+
+
+def test_error_only_loop_survives_shorter_exact_window():
+    steps = [
+        shell(0, "pytest", observation="bash: pytest: command not found"),
+        thought(1),
+        shell(2, "pytest", observation="bash: pytest: command not found"),
+        thought(3),
+        shell(4, "pytest", observation="bash: pytest: command not found"),
+    ]
+    findings = ExecutionLoopDetector(window=3).detect(make_trajectory(steps))
+    assert [f.detail["pattern"] for f in findings] == ["error"]
+
+
+def test_partial_exact_coverage_does_not_hide_wider_error_loop():
+    steps = [
+        shell(i, "pytest" if i < 3 else "python -m pytest", observation="ValueError: broken")
+        for i in range(4)
+    ]
+    findings = ExecutionLoopDetector().detect(make_trajectory(steps))
+    assert [f.detail["pattern"] for f in findings] == ["exact", "error"]
+    assert findings[1].detail["occurrences"] == [0, 1, 2, 3]
 
 
 def test_edit_churn_on_one_file_is_not_a_loop():
@@ -184,6 +237,68 @@ def test_never_verified_when_edits_precede_submit():
     steps = [edit(0, "src/pkg/core.py", payload="x"), submit(1)]
     findings = VerificationGapDetector().detect(make_trajectory(steps))
     assert [f for f in findings if f.detail["pattern"] == "never_verified"]
+
+
+def test_repeated_edit_after_test_invalidates_verification_without_padding_count():
+    first = edit(0, "src/pkg/core.py", payload="first")
+    first.args["old_str"] = "def f(): return 0"
+    repeated = edit(2, "src/pkg/core.py", payload="second")
+    repeated.args["old_str"] = first.args["old_str"]
+    steps = [
+        first,
+        shell(1, "pytest", observation="1 passed", is_test_run=True),
+        repeated,
+        submit(3),
+    ]
+    trajectory = make_trajectory(steps)
+    assert source_edits(trajectory) == [0], "count the region only once"
+    assert source_edit_events(trajectory) == [0, 2], "retain every edit event for timing"
+    findings = VerificationGapDetector().detect(trajectory)
+    assert len(findings) == 1
+    assert findings[0].detail == {
+        "pattern": "stale_verification", "last_test": 1, "last_edit": 2
+    }
+    assert WeakVerificationDetector().detect(trajectory) == []
+
+
+def test_edit_immediately_before_submit_is_stale_even_with_default_grace():
+    steps = [
+        shell(0, "pytest", observation="1 passed", is_test_run=True),
+        edit(1, "src/pkg/core.py", payload="final change"),
+        submit(2),
+    ]
+    findings = VerificationGapDetector().detect(make_trajectory(steps))
+    assert len(findings) == 1
+    assert findings[0].detail["pattern"] == "stale_verification"
+    assert findings[0].detail["last_edit"] == 1
+
+
+def test_test_after_repeated_edit_restores_verification():
+    first = edit(0, "src/pkg/core.py", payload="first")
+    first.args["old_str"] = "def f(): return 0"
+    repeated = edit(2, "src/pkg/core.py", payload="second")
+    repeated.args["old_str"] = first.args["old_str"]
+    steps = [
+        first,
+        shell(1, "pytest", observation="1 passed", is_test_run=True),
+        repeated,
+        shell(3, "pytest", observation="1 passed", is_test_run=True),
+        submit(4),
+    ]
+    assert VerificationGapDetector().detect(make_trajectory(steps)) == []
+
+
+def test_rejected_or_non_source_post_test_edit_does_not_invalidate_verification():
+    rejected = edit(2, "src/pkg/core.py", payload="bad change")
+    rejected.observation = "ERROR: No replacement was performed"
+    for last_edit in [rejected, edit(2, "tests/test_core.py"), edit(2, "README.md")]:
+        steps = [
+            edit(0, "src/pkg/core.py"),
+            shell(1, "pytest", observation="1 passed", is_test_run=True),
+            last_edit,
+            submit(3),
+        ]
+        assert VerificationGapDetector().detect(make_trajectory(steps)) == []
 
 
 def test_running_tests_clears_never_verified():
@@ -595,7 +710,7 @@ def test_findings_command_never_emits_a_duplicate_finding_id(tmp_path):
     data.write_text(json.dumps(payload) + "\n" + json.dumps(payload) + "\n", encoding="utf-8")
     out = tmp_path / "out.jsonl"
 
-    result = CliRunner().invoke(app, ["findings", str(data), "--out", str(out)])
+    result = CliRunner().invoke(app, ["findings", str(data), "--out", str(out), "--tier", "all"])
     # A CLI error must fail the test loudly; an unwritten file would otherwise read
     # as "no duplicates" and let this pass without testing anything.
     assert result.exit_code == 0, result.output

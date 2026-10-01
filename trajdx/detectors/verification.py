@@ -53,36 +53,34 @@ def _edit_region(step: AgentStep) -> str | None:
     return " ".join(str(old).split())[:200]
 
 
+def source_edit_events(trajectory: Trajectory) -> list[int]:
+    """All successful source edit events, without losing repeated-edit timing."""
+    out: list[int] = []
+    for idx, step in enumerate(trajectory.steps):
+        if step.kind is not StepKind.EDIT or edit_was_rejected(step):
+            continue
+        files = step.files_touched or ((step.args["path"],) if step.args.get("path") else ())
+        # Unknown paths are counted conservatively.
+        if files and all(is_test_or_scratch(f) or is_doc_or_config(f) for f in files):
+            continue
+        out.append(idx)
+    return out
+
+
 def source_edits(trajectory: Trajectory) -> list[int]:
-    """Steps that modified *library source*, excluding tests and scratch scripts.
+    """Distinct source changes for counting, not for verification chronology.
 
-    Counting is deliberately strict, because every edit counted here is one more
-    edit the agent is accused of leaving untested:
-
-    * a **rejected** edit wrote nothing, so it is skipped;
-    * docs and project configuration are not source;
-    * rewriting the **same region** of the same file again is iteration on one
-      change and counts once (pilot verdict: one function rewritten five times
-      was reported as five edits).
-
-    The test/scratch filter is what makes this detector work at all.  Agents
-    constantly write a ``reproduce_issue.py`` and run it; an unfiltered edit count
-    records that as heavy editing with no testing -- the opposite of what happened.
+    Rewrites of the same region count once; every successful rewrite remains in
+    source_edit_events so a post-test rewrite still invalidates verification.
     """
     out: list[int] = []
     seen_regions: set[tuple[tuple[str, ...], str]] = set()
-    for idx, step in enumerate(trajectory.steps):
-        if step.kind is not StepKind.EDIT:
-            continue
-        if edit_was_rejected(step):
-            continue
-        files = step.files_touched
-        # An edit we cannot attribute to a path is counted, to stay conservative.
-        if files and all(is_test_or_scratch(f) or is_doc_or_config(f) for f in files):
-            continue
+    for idx in source_edit_events(trajectory):
+        step = trajectory.steps[idx]
+        files = step.files_touched or ((step.args["path"],) if step.args.get("path") else ())
         region = _edit_region(step)
         if region is not None and files:
-            key = (tuple(files), region)
+            key = (tuple(sorted(files)), region)
             if key in seen_regions:
                 continue
             seen_regions.add(key)
@@ -101,9 +99,8 @@ class VerificationGapDetector(Detector):
     tier: ClassVar[Tier] = Tier.EXPERIMENTAL
 
     def __init__(self, stale_grace: int = 3) -> None:
-        #: Steps of slack after the last edit before an earlier test run counts
-        #: as stale; a test issued immediately before submission is fine even if
-        #: a keystroke-level edit happened just before it.
+        # Retained for API compatibility.  Even an immediately post-test edit
+        # changes the tested tree; distance from the test cannot make it valid.
         self.stale_grace = stale_grace
 
     def detect(self, trajectory: Trajectory) -> list[Finding]:
@@ -112,6 +109,7 @@ class VerificationGapDetector(Detector):
 
         test_steps = [i for i, s in enumerate(trajectory.steps) if s.is_test_run]
         edit_steps = source_edits(trajectory)
+        edit_events = source_edit_events(trajectory)
         submit_steps = [i for i, s in enumerate(trajectory.steps) if s.kind is StepKind.SUBMIT]
         end = submit_steps[-1] if submit_steps else trajectory.n_steps - 1
 
@@ -139,9 +137,9 @@ class VerificationGapDetector(Detector):
             return findings
 
         # --- verified, but not after the final change ------------------------
-        if test_steps and edit_steps:
-            last_edit, last_test = edit_steps[-1], test_steps[-1]
-            if last_edit - last_test > self.stale_grace and last_test < end:
+        if test_steps and edit_events:
+            last_edit, last_test = edit_events[-1], test_steps[-1]
+            if last_edit > last_test and last_test < end:
                 findings.append(
                     Finding(
                         detector=self.name,

@@ -16,6 +16,7 @@ with the ``tool`` message that answers it.
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from dataclasses import dataclass, field
 from enum import Enum
@@ -133,11 +134,17 @@ class AgentStep:
         which is the strongest possible signal of an execution loop.
         """
         if self.kind is StepKind.EDIT:
-            payload = "|".join(
-                str(self.args.get(k, ""))
-                for k in ("old_str", "new_str", "file_text", "insert_line")
+            # Canonical JSON preserves argument boundaries and types (unlike a
+            # delimiter-joined payload), and includes ranges and the real path.
+            # Coarse action_key intentionally scrubs paths; exact identity must
+            # not merge edits to distinct temporary files or numbered modules.
+            semantic_args = {k: v for k, v in self.args.items() if v is not None}
+            semantic_args["path"] = self.args.get("path") or ""
+            semantic_args["verb"] = self.args.get("verb") or "edit"
+            payload = json.dumps(
+                semantic_args, sort_keys=True, ensure_ascii=False, separators=(",", ":")
             )
-            return f"{self.action_key}#{_short_hash(payload, 10)}"
+            return f"edit:#{_short_hash(payload, 16)}"
         if self.kind is StepKind.SHELL:
             return f"{self.action_key}#{_short_hash(str(self.args.get('command', '')), 10)}"
         return self.action_key
@@ -165,7 +172,11 @@ class AgentStep:
     @property
     def failed(self) -> bool:
         """True when this step produced an error signal of any kind."""
-        return self.error_fp is not None or (self.exit_code not in (None, 0))
+        return (
+            self.error_fp is not None
+            or self.error_kind is not None
+            or self.exit_code not in (None, 0)
+        )
 
     # ------------------------------------------------------------- rendering
     def action_summary(self, width: int = 96) -> str:
@@ -312,22 +323,82 @@ class Trajectory:
 # Unified diff helpers
 # --------------------------------------------------------------------------
 
-_DIFF_PATH = re.compile(r"^\+\+\+ b/(.+)$", re.M)
-_DIFF_PATH_ALT = re.compile(r"^diff --git a/\S+ b/(\S+)$", re.M)
+_DIFF_PATH_ALT = re.compile(r'^diff --git (?:"a/.*?"|a/.*?) ("b/.*"|b/.*)$')
+
+
+def _patch_path(raw: str, strip_prefix: bool = True) -> str:
+    """Decode a diff header path, ignoring unified-diff timestamps."""
+    raw = raw.split("\t", 1)[0].strip()
+    if raw.startswith('"'):
+        try:
+            raw = json.loads(raw)
+        except (ValueError, TypeError):
+            raw = raw.strip('"')
+    if raw == "/dev/null":
+        return ""
+    return raw[2:] if strip_prefix and raw.startswith(("a/", "b/")) else raw
 
 
 def patch_files(patch: str | None) -> list[str]:
-    """Extract the set of file paths touched by a unified diff, in order."""
+    """Extract touched paths in diff-block order, including deletions/binaries.
+
+    Prefer the destination for modifications/renames and the source for deleted
+    files.  Header-only rename and binary blocks fall back to their git header;
+    fallback must happen per block, not only when the entire patch has no +++.
+    """
     if not patch:
         return []
     seen: dict[str, None] = {}
-    for match in _DIFF_PATH.finditer(patch):
-        path = match.group(1).strip()
-        if path and path != "/dev/null":
+    old_path = new_path = fallback = ""
+    has_new_header = False
+    in_hunk = False
+    old_remaining = new_remaining = 0
+
+    def flush() -> None:
+        path = (new_path or old_path) if has_new_header else (new_path or fallback or old_path)
+        if path:
             seen.setdefault(path, None)
-    if not seen:
-        for match in _DIFF_PATH_ALT.finditer(patch):
-            seen.setdefault(match.group(1).strip(), None)
+
+    for line in patch.splitlines():
+        if line.startswith("diff --git "):
+            flush()
+            old_path = new_path = fallback = ""
+            has_new_header = in_hunk = False
+            old_remaining = new_remaining = 0
+            match = _DIFF_PATH_ALT.match(line)
+            if match:
+                fallback = _patch_path(match.group(1))
+        elif line.startswith("@@"):
+            match = re.match(r"^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@", line)
+            if match:
+                old_remaining = int(match.group(1) or "1")
+                new_remaining = int(match.group(2) or "1")
+                in_hunk = bool(old_remaining or new_remaining)
+        elif in_hunk:
+            # Header-shaped source lines (+++ / ---) inside a hunk are content.
+            if line.startswith(" "):
+                old_remaining -= 1
+                new_remaining -= 1
+            elif line.startswith("-"):
+                old_remaining -= 1
+            elif line.startswith("+"):
+                new_remaining -= 1
+            in_hunk = old_remaining > 0 or new_remaining > 0
+        elif line.startswith("--- "):
+            if has_new_header:
+                flush()
+                old_path = new_path = fallback = ""
+                has_new_header = False
+            old_path = _patch_path(line[4:])
+        elif not in_hunk and line.startswith("+++ "):
+            if has_new_header:
+                flush()
+                old_path = new_path = fallback = ""
+            new_path = _patch_path(line[4:])
+            has_new_header = True
+        elif not in_hunk and line.startswith("rename to "):
+            new_path = _patch_path(line[len("rename to "):], strip_prefix=False)
+    flush()
     return list(seen)
 
 

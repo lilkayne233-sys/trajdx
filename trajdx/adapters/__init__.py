@@ -5,6 +5,7 @@ from trajdx.adapters.base import (
     Adapter,
     detect_adapter,
     load_file,
+    iter_file,
     register_adapter,
 )
 from trajdx.adapters.openhands import OpenHandsAdapter
@@ -17,5 +18,6 @@ __all__ = [
     "SWEAgentAdapter",
     "detect_adapter",
     "load_file",
+    "iter_file",
     "register_adapter",
 ]

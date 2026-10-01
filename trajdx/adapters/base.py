@@ -6,7 +6,7 @@ import json
 import warnings
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Any, ClassVar, Mapping
+from typing import Any, ClassVar, Mapping, Iterator
 
 from trajdx.schema import Trajectory
 
@@ -107,12 +107,13 @@ def _iter_records(path: Path):
         yield index, item
 
 
-def load_file(
+def iter_file(
     path: str | Path,
     framework: str | None = None,
     gold: str | Path | Mapping[str, list[str]] | None = None,
     on_empty: str = "warn",
-) -> list[Trajectory]:
+    limit: int | None = None,
+) -> Iterator[Trajectory]:
     """Load every trajectory contained in ``path``.
 
     ``framework`` forces a specific adapter; by default each record is sniffed.
@@ -134,12 +135,22 @@ def load_file(
     if on_empty not in ("warn", "error"):
         raise ValueError(f"on_empty must be 'warn' or 'error', not {on_empty!r}")
 
+    if limit is not None and limit < 0:
+        raise ValueError("limit must be non-negative")
+    if framework is not None and framework not in ADAPTERS:
+        raise ValueError(f"unknown framework: {framework!r}")
     path = Path(path)
     forced = ADAPTERS.get(framework) if framework else None
-
-    out: list[Trajectory] = []
+    from trajdx.gold import attach_gold, load_gold
+    mapping = load_gold(gold) if isinstance(gold, (str, Path)) else gold
+    emitted = 0
     empty: list[int] = []
-    for position, record in _iter_records(path):
+    records = iter(_iter_records(path))
+    while limit is None or emitted < limit:
+        try:
+            position, record = next(records)
+        except StopIteration:
+            break
         try:
             adapter = forced or detect_adapter(record)
         except ValueError as exc:
@@ -155,7 +166,10 @@ def load_file(
                 )
             empty.append(position)
             continue
-        out.append(trajectory)
+        if mapping is not None:
+            attach_gold([trajectory], mapping)
+        emitted += 1
+        yield trajectory
 
     if empty:
         shown = ", ".join(str(p) for p in empty[:5])
@@ -168,12 +182,17 @@ def load_file(
             stacklevel=2,
         )
 
-    if gold is not None:
-        from trajdx.gold import attach_gold, load_gold
 
-        mapping = load_gold(gold) if isinstance(gold, (str, Path)) else gold
-        attach_gold(out, mapping)
-    return out
+
+def load_file(
+    path: str | Path,
+    framework: str | None = None,
+    gold: str | Path | Mapping[str, list[str]] | None = None,
+    on_empty: str = "warn",
+    limit: int | None = None,
+) -> list[Trajectory]:
+    """Compatibility list API; ``limit`` stops reading JSONL before the next record."""
+    return list(iter_file(path, framework, gold, on_empty, limit))
 
 
 # Import for side effects: each module registers itself with ADAPTERS.

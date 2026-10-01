@@ -8,11 +8,12 @@ import re
 # Paths
 # --------------------------------------------------------------------------
 
-#: Sandbox roots that agents like to leak into every path they mention.  The
-#: pattern is unanchored so that stacked prefixes collapse in one pass, e.g.
-#: ``/workspace/django__django-123/src/a.py`` -> ``src/a.py``.
+#: Sandbox roots that agents like to leak into every path they mention.
+#: Only match at the path start, then peel stacked prefixes in successive passes,
+#: e.g. ``/workspace/django__django-123/src/a.py`` -> ``src/a.py``.  Matching
+#: interior components would corrupt real repository paths such as ``src/app/``.
 _CONTAINER_ROOT = re.compile(
-    r"(?:^|/)(?:testbed|workspace|repo|app|code|project|"
+    r"^/?(?:testbed|workspace|repo|app|code|project|"
     r"[A-Za-z0-9_.+-]+__[A-Za-z0-9_.+-]+|[0-9a-f]{6,})/",
     re.IGNORECASE,
 )

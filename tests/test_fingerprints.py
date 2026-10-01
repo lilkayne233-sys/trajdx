@@ -64,6 +64,55 @@ def test_clean_output_strips_ansi_and_carriage_returns():
     assert "\r" not in clean_output("progress 10%\rprogress 100%\ndone\n")
 
 
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        ("first\r\nValueError: bad\r\n", "first\nValueError: bad\n"),
+        ("progress 10%\rprogress 100%\r\ndone\r\n", "progress 100%\ndone\n"),
+        ("old\rnew\nnext old\rnext new\n", "new\nnext new\n"),
+        ("\x1b[31mERROR\x1b[0m\r\n", "ERROR\n"),
+    ],
+)
+def test_clean_output_preserves_crlf_body(text, expected):
+    assert clean_output(text) == expected
+
+
+def test_crlf_error_body_remains_classifiable():
+    assert classify_error("Traceback (most recent call last):\r\nValueError: bad\r\n")[0] == "value_error"
+
+
+@pytest.mark.parametrize(
+    "footer,expected",
+    [
+        ("Exit code: 1", 1),
+        ("exit code=137", 137),
+        ("exit code 0", 0),
+        ("[exit code: -9]", -9),
+        ("[exit code: +2]", 2),
+        ("[The command completed with exit code 0.]", 0),
+        ("Process exited with code -15", -15),
+    ],
+)
+def test_exit_footer_wins_over_body(footer, expected):
+    observation = f"documented exit code 0; another exit code: 123\nValueError: bad\n{footer}\n\n"
+    assert extract_exit_code(observation) == expected
+    assert extract_exit_code(observation.replace("\n", "\r\n")) == expected
+    if expected == 0:
+        assert classify_error(observation) == (None, None)
+    else:
+        assert classify_error(observation)[0] == "value_error"
+
+
+def test_last_exit_footer_wins_over_an_earlier_footer():
+    assert extract_exit_code("Exit code: 0\nValueError: bad\n[exit code: 1]\n") == 1
+    assert classify_error("Exit code: 1\nValueError: bad\n[exit code: 0]\n") == (None, None)
+
+
+@pytest.mark.parametrize("code", [-15, +2, 0, 137])
+def test_signed_exit_code_legacy_fallback(code):
+    assert extract_exit_code(f"tool reported exit code={code:+d} during execution") == code
+
+
 def test_extract_exit_code():
     assert extract_exit_code("Exit code: 1") == 1
     assert extract_exit_code("exit code=137") == 137

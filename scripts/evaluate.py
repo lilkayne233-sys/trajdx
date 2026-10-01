@@ -34,6 +34,9 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 
+from trajdx.identity import finding_identity
+
+
 def load_jsonl(pattern: str) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for path in sorted(glob.glob(pattern)):
@@ -86,11 +89,13 @@ def live_findings(raw: Path) -> tuple[dict[str, dict[str, Any]], int]:
     duplicates = 0
     for trajectory in trajectories:
         for finding in detect_all(trajectory):
-            fid = f"{trajectory.instance_id}|{finding.detector}|{finding.start}"
+            identity = finding_identity(trajectory, finding)
+            fid = identity["finding_id"]
             if fid in live:
                 duplicates += 1
                 continue
             live[fid] = {
+                **identity,
                 "finding_id": fid,
                 "instance_id": trajectory.instance_id,
                 "resolved": trajectory.resolved,
@@ -101,19 +106,36 @@ def live_findings(raw: Path) -> tuple[dict[str, dict[str, Any]], int]:
     return live, duplicates
 
 
-def join_labels(raw: Path, labels: dict[str, dict[str, Any]]):
+def join_labels(raw: Path, labels: dict[str, dict[str, Any]], allow_legacy: bool = False):
     """Join stored verdicts onto freshly computed findings.
 
     A label whose finding no longer exists (the detector changed, so that step is
     no longer flagged) is **stale**: it is counted and reported, never scored.
     """
     live, duplicates = live_findings(raw)
-    joined = [
-        {**live[fid], "verdict": label["verdict"], "reason": label.get("reason", "")}
-        for fid, label in labels.items()
-        if fid in live
-    ]
-    stale = Counter(fid.split("|")[1] for fid in labels if fid not in live)
+    legacy: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in live.values():
+        legacy[row["legacy_finding_id"]].append(row)
+    joined = []
+    stale = Counter()
+    legacy_matched = 0
+    rejected_legacy = 0
+    for fid, label in labels.items():
+        row = live.get(fid)
+        if row is None and not fid.startswith("v2|"):
+            candidates = legacy.get(fid, [])
+            if allow_legacy and len(candidates) == 1:
+                row = candidates[0]
+                legacy_matched += 1
+            else:
+                rejected_legacy += 1
+        if row is not None and label.get("finding_signature", row["finding_signature"]) != row["finding_signature"]:
+            row = None
+        if row is not None:
+            joined.append({**row, "verdict": label["verdict"], "reason": label.get("reason", "")})
+        else:
+            detector = label.get("detector") or (fid.split("|")[2] if fid.startswith("v2|") else fid.split("|")[1])
+            stale[detector] += 1
     info = {
         "live": len(live),
         "labels": len(labels),
@@ -122,6 +144,8 @@ def join_labels(raw: Path, labels: dict[str, dict[str, Any]]):
         "stale_by_detector": dict(stale),
         "unlabelled": len(live) - len(joined),
         "duplicate_ids": duplicates,
+        "legacy_matched": legacy_matched,
+        "rejected_legacy": rejected_legacy,
     }
     return joined, info
 
@@ -131,7 +155,9 @@ def coverage_line(info: dict[str, Any]) -> str:
     return (
         f"labels: {info['labels']} stored, {info['matched']} still match a finding the current "
         f"code emits, {info['stale']} stale and NOT scored (by detector: {stale}); "
-        f"current code emits {info['live']} findings, {info['unlabelled']} of them unlabelled."
+        f"current code emits {info['live']} findings, {info['unlabelled']} of them unlabelled; "
+        f"legacy matches={info.get('legacy_matched', 0)} (unverified semantics), "
+        f"rejected legacy={info.get('rejected_legacy', 0)}, duplicate IDs={info['duplicate_ids']}."
     )
 
 
@@ -191,6 +217,7 @@ def main() -> int:
                     help="precision target used to pick a recommended threshold")
     ap.add_argument("--markdown", action="store_true",
                     help="print only the per-detector table as markdown, for the README")
+    ap.add_argument("--allow-legacy", action="store_true", help="historical comparison only: reuse unversioned labels when unambiguous")
     args = ap.parse_args()
 
     if not args.raw.exists():
@@ -200,7 +227,7 @@ def main() -> int:
         return 1
 
     labels = {row["finding_id"]: row for row in load_jsonl(args.labels)}
-    joined, join_info = join_labels(args.raw, labels)
+    joined, join_info = join_labels(args.raw, labels, allow_legacy=args.allow_legacy)
 
     if not joined:
         print("no stored label matches a finding the current code emits\n"
@@ -253,7 +280,7 @@ def main() -> int:
     # --------------------------------------------------------- threshold curve
     print("\nthreshold curve (detector confidence cutoff)")
     header = (f"{'min_conf':>9} {'kept':>6} {'valid':>6} {'invalid':>8} "
-              f"{'prec':>7} {'recall':>8}")
+              f"{'prec':>7} {'retained':>8}")
     print(header)
     print("-" * (len(header) + 22))
     best_threshold = None

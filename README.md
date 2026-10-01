@@ -63,22 +63,22 @@ pytest -q
 直接生成，可原样复现：
 
 ```bash
-python scripts/evaluate.py --labels "data/labels/labelled_v3_*.jsonl" --markdown
+python scripts/evaluate.py --labels "data/labels/labelled_v3_*.jsonl" --markdown --allow-legacy
 ```
 
 | Detector | Tier | Precision | n |
 |---|---|---|---|
 | `execution_loop` | experimental | 100.0% | 1 |
-| `termination_anomaly` | core | 91.7% | 24 |
+| `termination_anomaly` | core | 95.5% | 22 |
 | `weak_verification` | experimental | 66.7% | 3 |
 | `verification_gap` | experimental | 40.0% | 5 |
 | `blind_search` | experimental | 0.0% | 1 |
 | `environment_stuck` | experimental | — | 0 |
 | `localization_failure` | experimental | — | 0 |
 | `redundant_read` | experimental | — | 0 |
-| **整体** | | **79.4%** | **34** |
+| **整体** | | **81.2%** | **32** |
 
-*评估每次都会用**当前代码重跑检测器**，再把已存的人工/大模型判决按 `finding_id` 对上。83 条已存判决里只有 34 条仍对应当前代码会报出的 finding，其余 49 条已失效、**不计分**（旧规则报过、新规则不再报）。所以下表 n 远小于旧表——旧表把已失效的判决也算进去了。*
+*本表仅为显式 `--allow-legacy` 历史对照，不是修复后的重新验证：83 条旧判决中，32 条起点身份唯一匹配、51 条失效或有歧义；当前有 66 条 finding，34 条无匹配判决。旧标签没有运行/证据签名，所以即便匹配也不能保证语义仍适用。严格评估默认拒绝全部旧标签；必须重新复核并回传新 `finding_id` 后才能建立当前精确率。*
 
 读表前先看 `n`：**`n=0`（显示为「—」）表示这条规则在该轮没有命中样本，而不是准确率
 100%，两者绝不能混读。** `redundant_read` 正是这种情形：它在未随仓库发布的轮次里拿到过
@@ -86,7 +86,7 @@ python scripts/evaluate.py --labels "data/labels/labelled_v3_*.jsonl" --markdown
 停留在 `experimental`，而不是 core。同样，仓库内可复现的人工结论是 v2 与 v3 两轮的
 **145 条**（文件里共 204 行，去掉 59 条重复后；覆盖 88 条轨迹），更早与更晚轮次的复核结果没有随仓库发布。
 
-**在这批可复现的标注里，只有 `termination_anomaly`（91.7%）越过了 88% 这条线。**
+**历史对照只有 `termination_anomaly`（95.5%，21/22）越过点估计 88% 这条线；它不是总体可靠性保证。当前代码的 66 条 finding 已完成一次独立 AI 复核（见下文「独立 AI 复核」），严格门禁按该批复核通过。**
 其余规则都照常随包发布，但被标记为 `Tier.EXPERIMENTAL`，并且 `replay` / `findings`
 默认不输出 experimental 规则——单条 experimental finding 不应被当作结论来读。需要
 样本量做聚合分析时用 `--tier all`，聚合表会同时披露各分类的区分度。
@@ -152,7 +152,7 @@ python scripts/discrimination.py       # 各指标对 resolved 标签的 AUC
 ```
 
 **WSR 不能预测失败。** 对 resolved/unresolved 标签做 Mann-Whitney AUC 只有
-**0.520**——与抛硬币无异。把它当作失败预测器会是错的，所以文档和 CLI 都严格把它
+**0.516**——与抛硬币无异。把它当作失败预测器会是错的，所以文档和 CLI 都严格把它
 描述成一个*效率*指标：它说明一次运行有多少比例在原地打转，而不是这次运行会不会成功。
 
 真正携带信号的是「过程形状」类指标。下表同样由 `scripts/discrimination.py` 直接输出
@@ -165,7 +165,7 @@ python scripts/discrimination.py       # 各指标对 resolved 标签的 AUC
 | `test_runs` | 0.538 | — | 14.09 | 14.86 |
 | `tests_per_source_edit` | 0.386 | **0.614** | 8.16 | 6.24 |
 | `test_run_ratio` | 0.402 | **0.598** | 0.2451 | 0.2192 |
-| `wasted_step_ratio` | 0.520 | — | 0.0011 | 0.0046 |
+| `wasted_step_ratio` | 0.516 | — | 0.0011 | 0.0035 |
 
 读法：**成功的运行更短、改的源码更少，而且每改一次测得更勤。** 单看区分度，
 最强的是运行长度（`total_steps` 0.694），但它是症状不是病因；真正有行动价值的是
@@ -291,21 +291,44 @@ trajdx/
 
 数据目录的取舍是有意的：`data/raw/` 与 `data/reports/` 体积大且可由脚本复现，
 因此不进版本库；而 `data/labels/` 是**不可复现的人工结论**，必须入库。
-复跑 `scripts/evaluate.py` 只需要 `data/labels/` 下的两个文件即可，不依赖原始轨迹。
+复跑评估必须有原始轨迹。现有 v2/v3 标签仅可用 `--allow-legacy` 做历史对照；当前评估使用 `data/labels/reviewed_ai_identity_v2.jsonl`（独立 AI 复核）。
+
+### 独立 AI 复核（非人工）
+
+`data/labels/reviewed_ai_identity_v2.jsonl` 是当前代码全部 66 条 finding 的独立 AI 上下文审查判决：复核包屏蔽了 resolved，未读取或沿用旧 verdict，并保留 run/证据签名与代码、原始数据哈希。**这不是人工标注，也不是独立留出集；每一条都标注了 `reviewer_type=ai` 且 `human_verified=false`。**
+
+| 检测器 | valid | invalid | uncertain | 精确率 |
+|---|---:|---:|---:|---:|
+| `termination_anomaly` | 38 | 2 | 0 | 95.0% |
+| `redundant_read` | 3 | 1 | 0 | 75.0% |
+| `verification_gap` | 7 | 5 | 1 | 58.3% |
+| `execution_loop` | 2 | 3 | 0 | 40.0% |
+| `blind_search` | 0 | 1 | 0 | 0.0% |
+| `weak_verification` | 0 | 3 | 0 | 0.0% |
+| **整体** | **50** | **15** | **1** | **76.9%** |
+
+严格门禁（n≥20、core 覆盖率≥80%、点估计≥88%）按这批标签通过：`termination_anomaly` 40 条、95.0%、覆盖 100%。但这暴露了应当修掉的真实误报：`verification_gap` 不把代理自写并运行的复现脚本算作验证；`patch_ignores_source` 的 scratch 正则把根目录探针与 `checkpoint.py` 当源码；`execution_loop/exact` 把 `C-c` 当中止不同进程的重复命令；`weak_verification` 的编辑计数被重复改写放大；`blind_search` 把沿调用链收敛的探索判为盲搜。**修规则后必须重新复核，不能沿用本轮 verdict。**
 
 ## 复跑评估
 
 ```bash
-# 完整评估：逐检测器精确率、置信度分档、阈值曲线
+# 当前复核标签：严格门禁与完整评估
+python scripts/check_regression.py \
+  --labels data/labels/reviewed_ai_identity_v2.jsonl
 python scripts/evaluate.py \
-  --labels "data/labels/labelled_v3_*.jsonl"
+  --labels data/labels/reviewed_ai_identity_v2.jsonl
 
-# 只要 README 用的那张表
+# 历史对照（非当前质量证明）
 python scripts/evaluate.py \
-  --labels "data/labels/labelled_v3_*.jsonl" --markdown
+  --labels "data/labels/labelled_v3_*.jsonl" --allow-legacy
 
-# 门槛检查：任何一个 core 规则跌破 88%，或没有可验证样本，就以非零码退出
-python scripts/check_regression.py
+# 只要 README 用的历史对照表
+python scripts/evaluate.py \
+  --labels "data/labels/labelled_v3_*.jsonl" --markdown --allow-legacy
+
+# 门槛检查：任何一个 core 规则跌破 88%，或样本/覆盖率不足，就以非零码退出
+python scripts/check_regression.py \
+  --labels data/labels/reviewed_ai_identity_v2.jsonl
 
 # gold 通道：localization_failure 的区分度（需先跑 fetch_gold.py）
 python -m trajdx.cli diagnose data/raw/openhands_sample.jsonl \
@@ -317,5 +340,9 @@ python -m trajdx.cli diagnose data/raw/openhands_sample.jsonl \
 最后一条依赖 `data/raw/` 与 `data/gold/` 这两个 gitignore 目录，所以在裸克隆里跑不了；
 `tests/test_gold.py` 里对应的那条检查在没有数据时自动跳过，不会假装通过。
 
-`scripts/check_regression.py` 会被测试套件一并调用，所以 core 层级不是一句承诺，
-而是一条会让构建失败的断言：**规则跌破门槛时必须改代码或降级，不能只在文档里改数字。**
+`scripts/check_regression.py` 会被测试套件一并调用，测试会验证它拒绝无身份旧标签。**当前严格门禁应返回非零码，待新 finding 复核后恢复；不能自动迁移 verdict 来制造通过。**
+## 修复后的有界数据验证
+
+`python scripts/validate_pool.py --input data/raw/openhands_pool.jsonl --sample-out data/raw/validation_openhands.jsonl --report data/reports/validation_openhands_after.json`
+
+默认只扫描前 1200 条、按 outcome 与消息长度分层抽样、逐条诊断。SWE-agent 使用 `target` 字段分层。样本不代表全语料，不产生 precision/recall，也不能给框架排名。JSONL 加载 API 支持 `iter_file` 和真正的 `limit`；JSON 数组文件仍需整份解析。新标注需保留 `finding_id`、`run_id`、`finding_signature`，证据变化即重新复核。

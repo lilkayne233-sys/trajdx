@@ -25,6 +25,7 @@ from trajdx.adapters import ADAPTERS, load_file
 from trajdx.detectors import REGISTRY, detect_all, filter_findings
 from trajdx.fingerprints import clean_output
 from trajdx.metrics import AggregateReport, WasteReport, aggregate, wasted_step_ratio
+from trajdx.identity import finding_identity
 from trajdx.schema import StepKind, Trajectory
 
 app = typer.Typer(
@@ -48,6 +49,8 @@ AGGREGATE_TIER = "all"
 def _tier_value(raw: str) -> Optional[str]:
     """``all`` disables the gate; anything else names a tier."""
     value = (raw or DEFAULT_TIER).lower()
+    if value not in {"core", "experimental", "all"}:
+        raise typer.BadParameter("expected core, experimental or all", param_hint="--tier")
     return None if value == "all" else value
 
 
@@ -116,11 +119,11 @@ def _load(
         console.print(f"[red]unknown framework '{framework}'[/]; known: {sorted(ADAPTERS)}")
         raise typer.Exit(code=2)
     try:
-        trajectories = load_file(data, framework=framework, gold=gold)
+        trajectories = load_file(data, framework=framework, gold=gold, limit=limit)
     except Exception as exc:  # surface the parse failure as a CLI error, not a traceback
         console.print(f"[red]failed to load {data}:[/] {exc}")
         raise typer.Exit(code=2) from exc
-    return trajectories[:limit] if limit else trajectories
+    return trajectories
 
 
 #: Shared option so every command that can use gold data spells it the same way.
@@ -289,6 +292,7 @@ def findings(
     context: int = typer.Option(3, "--context", help="steps of context on each side"),
     obs_chars: int = typer.Option(1200, "--obs-chars", help="observation truncation"),
     seed: int = typer.Option(0, "--seed"),
+    tier: str = typer.Option(DEFAULT_TIER, "--tier", help="core | experimental | all"),
     gold: Optional[Path] = GOLD_OPTION,
 ) -> None:
     """Sample findings with step context, ready for LLM pre-labelling and review."""
@@ -297,16 +301,14 @@ def findings(
     rng = random.Random(seed)
     trajectories = _load(data, framework, limit, gold=gold)
 
-    # ``finding_id`` is the join key against stored verdicts, so it must be unique.
-    # It is not automatically: a run that appears twice in the input (the same
-    # ``instance_id`` attempted twice) yields the same id twice, and a duplicate
-    # would be sampled -- and labelled -- twice.  Keep the first, say how many.
+    # Only identical run content and identical claims share a versioned ID.
+    # Repeated task attempts remain distinct; duplicate input records are sampled once.
     buckets: dict[str, list[tuple[Trajectory, object]]] = {}
     seen_ids: set[str] = set()
     dropped = 0
     for trajectory in trajectories:
-        for finding in detect_all(trajectory):
-            fid = f"{trajectory.instance_id}|{finding.detector}|{finding.start}"
+        for finding in detect_all(trajectory, tier=_tier_value(tier)):
+            fid = finding_identity(trajectory, finding)["finding_id"]
             if fid in seen_ids:
                 dropped += 1
                 continue
@@ -323,7 +325,9 @@ def findings(
             hi = min(trajectory.n_steps - 1, finding.end + context)
             rows.append(
                 {
-                    "finding_id": f"{trajectory.instance_id}|{detector}|{finding.start}",
+                    **finding_identity(trajectory, finding),
+                    "start": finding.start,
+                    "end": finding.end,
                     "instance_id": trajectory.instance_id,
                     "resolved": trajectory.resolved,
                     "detector": detector,

@@ -102,12 +102,19 @@ class ExecutionLoopDetector(Detector):
     # ---------------------------------------------------------------- detect
     def detect(self, trajectory: Trajectory) -> list[Finding]:
         steps = trajectory.steps
-        if len(steps) < self.min_repeats:
+        if len(steps) < min(self.min_repeats, self.error_repeats, 2 * self.oscillate_cycles):
             return []
 
-        findings: list[Finding] = []
-        findings.extend(self._exact_action_loops(trajectory))
-        findings.extend(self._error_loops(trajectory))
+        exact = self._exact_action_loops(trajectory)
+        findings = list(exact)
+        # Suppress an error diagnosis only when an emitted exact finding really
+        # covers all its occurrences.  A shared coarse action_key does not prove
+        # coverage: exact thresholds/windows or payloads may differ.
+        exact_coverage = [set(f.detail["occurrences"]) for f in exact]
+        for finding in self._error_loops(trajectory):
+            occurrences = set(finding.detail["occurrences"])
+            if not any(occurrences <= covered for covered in exact_coverage):
+                findings.append(finding)
         findings.extend(self._oscillations(trajectory))
         return findings
 
@@ -200,10 +207,6 @@ class ExecutionLoopDetector(Detector):
                     continue
                 wasted = tuple(span[1:])
                 actions = {trajectory.steps[i].action_key for i in span}
-                # If the action never changes either, `_exact_action_loops`
-                # already reported it; reporting both would double-count.
-                if len(actions) == 1 and len(span) > 2:
-                    pass
                 findings.append(
                     Finding(
                         detector=self.name,

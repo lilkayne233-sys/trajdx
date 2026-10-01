@@ -69,22 +69,22 @@ several annotation rounds. The table below is **not hand-written**: it is emitte
 by the command shown, and reproduces exactly.
 
 ```bash
-python scripts/evaluate.py --labels "data/labels/labelled_v3_*.jsonl" --markdown
+python scripts/evaluate.py --labels "data/labels/labelled_v3_*.jsonl" --markdown --allow-legacy
 ```
 
 | Detector | Tier | Precision | n |
 |---|---|---|---|
 | `execution_loop` | experimental | 100.0% | 1 |
-| `termination_anomaly` | core | 91.7% | 24 |
+| `termination_anomaly` | core | 95.5% | 22 |
 | `weak_verification` | experimental | 66.7% | 3 |
 | `verification_gap` | experimental | 40.0% | 5 |
 | `blind_search` | experimental | 0.0% | 1 |
 | `environment_stuck` | experimental | — | 0 |
 | `localization_failure` | experimental | — | 0 |
 | `redundant_read` | experimental | — | 0 |
-| **overall** | | **79.4%** | **34** |
+| **overall** | | **81.2%** | **32** |
 
-*The evaluation **re-runs the current detectors** every time and matches stored verdicts to the findings by `finding_id`. Of 83 stored verdicts only 34 still correspond to a finding the current code emits; the other 49 are stale and **not scored** (an old rule flagged them, the new rule does not). That is why n is far smaller than in the previous table, which scored stale verdicts too.*
+*Historical comparison only (`--allow-legacy`), not revalidation after the fixes: 32 of 83 old verdicts have an unambiguous location match, 51 are stale or ambiguous; 66 current findings include 34 unmatched claims. Legacy labels lack run/evidence signatures, so matching locations do not establish matching semantics. Strict evaluation rejects all legacy labels; review new finding IDs to establish current precision.*
 
 Read `n` before you read the precision: **`n=0` (shown as "—") means the rule
 produced no findings in this round, not that it was 100% correct — the two must
@@ -96,8 +96,7 @@ reason, the human verdicts reproducible from this repository are the **145** fro
 the v2 and v3 rounds (204 lines in the files, 59 of them duplicates; covering 88 trajectories); earlier and later rounds were not
 shipped.
 
-**On this reproducible sample, only `termination_anomaly` (91.7%) clears the 88%
-bar.** Every other rule is shipped but marked `Tier.EXPERIMENTAL`, and
+**Only `termination_anomaly` (95.5%, 21/22) clears the historical point-estimate bar; this is not a population guarantee. All 66 findings the current code emits have since had one independent AI review (see "Independent AI review" below), and the strict gate passes against that round.** Every other rule is shipped but marked `Tier.EXPERIMENTAL`, and
 `replay`/`findings` exclude experimental rules by default — an individual
 experimental finding should not be read as a conclusion. Use `--tier all` when you
 want volume for aggregate analysis, where the per-category discrimination is
@@ -175,7 +174,7 @@ python scripts/discrimination.py       # AUC of each metric against the resolved
 ```
 
 **WSR does not predict failure.** Mann-Whitney AUC against the resolved/unresolved
-label is **0.520** — indistinguishable from chance. Reporting it as a failure
+label is **0.516** — indistinguishable from chance. Reporting it as a failure
 predictor would be a mistake, so the docs and CLI describe it strictly as an
 *efficiency* metric: it says how much of a run was spent re-treading ground, not
 whether the run was going to succeed.
@@ -192,7 +191,7 @@ positive class, so a value below 0.5 means "lower is worse" and inverts to above
 | `test_runs` | 0.538 | — | 14.09 | 14.86 |
 | `tests_per_source_edit` | 0.386 | **0.614** | 8.16 | 6.24 |
 | `test_run_ratio` | 0.402 | **0.598** | 0.2451 | 0.2192 |
-| `wasted_step_ratio` | 0.520 | — | 0.0011 | 0.0046 |
+| `wasted_step_ratio` | 0.516 | — | 0.0011 | 0.0035 |
 
 Read it as: **resolved runs are shorter, edit less source, and test more per edit.**
 By raw discrimination the strongest single signal is run length (`total_steps`,
@@ -329,22 +328,44 @@ trajdx/
 The data split is deliberate: `data/raw/` and `data/reports/` are large and
 reproducible from a script, so they stay out of the repository, while
 `data/labels/` holds **irreproducible human judgements** and must be tracked.
-Re-running `scripts/evaluate.py` needs only the two files under `data/labels/`;
-it does not depend on the raw trajectories.
+Evaluation requires raw trajectories. Existing v2/v3 labels are available only for explicit `--allow-legacy` historical comparison; the current evaluation uses `data/labels/reviewed_ai_identity_v2.jsonl` (independent AI review).
+
+### Independent AI review (not human)
+
+`data/labels/reviewed_ai_identity_v2.jsonl` holds an independent AI context review of all 66 findings the current code emits. Review packets were outcome-blinded, no old verdict was read or reused, and every row carries the run/evidence signature plus code and raw-data hashes. **This is not human ground truth and not an independent held-out set: every row is `reviewer_type=ai` and `human_verified=false`.**
+
+| Detector | valid | invalid | uncertain | Precision |
+|---|---:|---:|---:|---:|
+| `termination_anomaly` | 38 | 2 | 0 | 95.0% |
+| `redundant_read` | 3 | 1 | 0 | 75.0% |
+| `verification_gap` | 7 | 5 | 1 | 58.3% |
+| `execution_loop` | 2 | 3 | 0 | 40.0% |
+| `blind_search` | 0 | 1 | 0 | 0.0% |
+| `weak_verification` | 0 | 3 | 0 | 0.0% |
+| **overall** | **50** | **15** | **1** | **76.9%** |
+
+The strict gate (n>=20, core coverage>=80%, point estimate>=88%) passes on this round: `termination_anomaly`, 40 findings at 95.0% with 100% coverage. It also exposed real false positives worth fixing: `verification_gap` does not count a repro script the agent wrote and ran as verification; `patch_ignores_source` treats root-level probes and `checkpoint.py` as source; `execution_loop/exact` reads `C-c` as a repeated failed command when each cancels a different process; `weak_verification`'s edit count is inflated by repeated rewrites; and `blind_search` flags convergent call-chain exploration. **After fixing those rules the review must be redone; these verdicts must not be carried over.**
 
 ## Re-running the evaluation
 
 ```bash
-# full evaluation: per-detector precision, confidence bands, threshold curve
+# current reviewed labels: strict gate and full evaluation
+python scripts/check_regression.py \
+  --labels data/labels/reviewed_ai_identity_v2.jsonl
 python scripts/evaluate.py \
-  --labels "data/labels/labelled_v3_*.jsonl"
+  --labels data/labels/reviewed_ai_identity_v2.jsonl
 
-# just the table the README quotes
+# historical comparison only
 python scripts/evaluate.py \
-  --labels "data/labels/labelled_v3_*.jsonl" --markdown
+  --labels "data/labels/labelled_v3_*.jsonl" --allow-legacy
 
-# bar check: exits non-zero if any core rule drops below 88%, or has no sample
-python scripts/check_regression.py
+# just the historical table the README quotes
+python scripts/evaluate.py \
+  --labels "data/labels/labelled_v3_*.jsonl" --markdown --allow-legacy
+
+# bar check: exits non-zero on a core rule below 88%, or too few samples
+python scripts/check_regression.py \
+  --labels data/labels/reviewed_ai_identity_v2.jsonl
 
 # gold channel: the discrimination of localization_failure (needs fetch_gold.py)
 python -m trajdx.cli diagnose data/raw/openhands_sample.jsonl \
@@ -358,5 +379,9 @@ cannot run in a bare clone; the matching check in `tests/test_gold.py` skips whe
 the data is absent rather than pretending to pass.
 
 `scripts/check_regression.py` is invoked by the test suite as well, so the core
-tier is not a promise in prose but an assertion that breaks the build: **a rule
-that falls below the bar must be fixed or demoted, never just re-described.**
+tests assert rejection of unversioned labels. **The strict gate passes against the reviewed versioned labels; verdicts must still never be auto-migrated just to pass it.**
+## Bounded pool validation
+
+`python scripts/validate_pool.py --input data/raw/openhands_pool.jsonl --sample-out data/raw/validation_openhands.jsonl --report data/reports/validation_openhands_after.json`
+
+By default, scans only the first 1200 records and samples by outcome/message length, then diagnoses one record at a time. SWE-agent outcomes come from `target`. This is not full-corpus random sampling, precision/recall measurement or a framework ranking. JSONL APIs support `iter_file` and an actual read limit; JSON arrays still load in full. New verdicts must retain `finding_id`, `run_id`, and `finding_signature`; changed evidence needs new review.
