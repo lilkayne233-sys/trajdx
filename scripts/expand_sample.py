@@ -46,6 +46,9 @@ def main() -> int:
     ap.add_argument("--outcome-key", default="resolved",
                     help="record field (truthy) defining the two strata; the SWE-agent "
                          "pool carries its outcome as 'target' instead")
+    ap.add_argument("--model-name", action="append", default=[],
+                    help="only draw records whose model_name field matches one of these "
+                         "(repeatable; default: no model filtering)")
     ap.add_argument("--max-per-instance", type=int, default=0,
                     help="cap how many trajectories of the same instance_id may be drawn "
                          "(0 = uncapped).  Pools that repeat each instance many times "
@@ -73,6 +76,8 @@ def main() -> int:
                 continue
             scanned += 1
             record = json.loads(line)
+            if args.model_name and record.get("model_name") not in args.model_name:
+                continue
             key = identity(record)
             if key in existing or key in seen:
                 continue

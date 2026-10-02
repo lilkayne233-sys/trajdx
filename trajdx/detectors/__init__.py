@@ -14,6 +14,7 @@ from trajdx.detectors.base import (
 )
 from trajdx.detectors.edit_error import EditErrorDetector
 from trajdx.detectors.localization import LocalizationFailureDetector
+from trajdx.detectors.lost_edit import LostEditDetector
 from trajdx.detectors.termination import TerminationAnomalyDetector
 from trajdx.detectors.verification import VerificationGapDetector
 
@@ -30,6 +31,7 @@ __all__ = [
     "register_detector",
     "EditErrorDetector",
     "LocalizationFailureDetector",
+    "LostEditDetector",
     "TerminationAnomalyDetector",
     "VerificationGapDetector",
 ]

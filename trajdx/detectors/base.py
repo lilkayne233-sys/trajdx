@@ -38,6 +38,8 @@ class Category(str, Enum):
 
     LOCALIZATION_FAILURE = "localization_failure"
     EDIT_ERROR = "edit_error"
+    LOST_EDIT = "lost_edit"
+    SUBMIT_DESPITE_FAILURE = "submit_despite_failure"
     VERIFICATION_GAP = "verification_gap"
     TERMINATION_ANOMALY = "termination_anomaly"
 

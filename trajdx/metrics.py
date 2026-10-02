@@ -167,6 +167,8 @@ def wasted_step_ratio(
     phase_of = {
         "termination_anomaly": Phase.EXECUTION,
         "edit_error": Phase.EXECUTION,
+        "lost_edit": Phase.EXECUTION,
+        "submit_despite_failure": Phase.VERIFICATION,
         "localization_failure": Phase.PLANNING,
         "verification_gap": Phase.VERIFICATION,
     }

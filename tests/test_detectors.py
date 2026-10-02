@@ -525,3 +525,92 @@ def test_findings_command_never_emits_a_duplicate_finding_id(tmp_path):
     ids = [json.loads(line)["finding_id"] for line in out.read_text(encoding="utf-8").splitlines() if line.strip()]
     assert ids, "the fixture must yield at least one finding or this test proves nothing"
     assert len(ids) == len(set(ids)), f"duplicate ids: {ids}"
+
+
+# --------------------------------------------------------------------------
+# lost_edit / submit_despite_failure
+# --------------------------------------------------------------------------
+
+
+def test_lost_edit_fires_when_edited_file_is_absent_from_patch():
+    steps = [edit(0, "src/pkg/core.py"), edit(1, "src/pkg/util.py"), submit(2)]
+    trajectory = make_trajectory(
+        steps, model_patch="diff --git a/src/pkg/core.py b/src/pkg/core.py\n--- a/src/pkg/core.py\n+++ b/src/pkg/core.py\n"
+    )
+    findings = [f for f in detect_all(trajectory) if f.detector == "lost_edit"]
+    assert len(findings) == 1
+    assert findings[0].detail["lost_files"] == ["src/pkg/util.py"]
+    assert findings[0].wasted_steps == (1,)
+
+
+def test_lost_edit_is_silent_when_patch_covers_every_edit():
+    steps = [edit(0, "src/pkg/core.py"), submit(1)]
+    trajectory = make_trajectory(
+        steps, model_patch="diff --git a/src/pkg/core.py b/src/pkg/core.py\n--- a/src/pkg/core.py\n+++ b/src/pkg/core.py\n"
+    )
+    assert [f for f in detect_all(trajectory) if f.detector == "lost_edit"] == []
+
+
+def test_lost_edit_ignores_files_created_this_run_and_scratch():
+    created = edit(0, "repro.py", verb="create",
+                   observation="File created successfully at: repro.py")
+    scratch = edit(1, "tests/test_x.py")
+    steps = [created, scratch, submit(2)]
+    trajectory = make_trajectory(steps, model_patch="diff --git a/src/pkg/core.py b/src/pkg/core.py\n--- a/src/pkg/core.py\n+++ b/src/pkg/core.py\n")
+    assert [f for f in detect_all(trajectory) if f.detector == "lost_edit"] == []
+
+
+def test_lost_edit_skips_empty_patch():
+    steps = [edit(0, "src/pkg/core.py")]
+    trajectory = make_trajectory(steps, model_patch="")
+    assert [f for f in detect_all(trajectory) if f.detector == "lost_edit"] == []
+
+
+def test_submit_despite_failure_fires_on_failing_last_test():
+    steps = [
+        edit(0, "src/pkg/core.py"),
+        shell(1, "pytest", observation="1 failed", is_test_run=True, exit_code=1),
+        submit(2),
+    ]
+    trajectory = make_trajectory(steps)
+    findings = [f for f in detect_all(trajectory) if f.detector == "submit_despite_failure"]
+    assert len(findings) == 1
+    assert findings[0].detail["last_verification"] == 1
+    assert findings[0].detail["submit_step"] == 2
+
+
+def test_passing_last_test_does_not_fire():
+    steps = [
+        edit(0, "src/pkg/core.py"),
+        shell(1, "pytest", observation="1 failed", is_test_run=True, exit_code=1),
+        shell(2, "pytest", observation="1 passed", is_test_run=True),
+        submit(3),
+    ]
+    trajectory = make_trajectory(steps)
+    assert [f for f in detect_all(trajectory) if f.detector == "submit_despite_failure"] == []
+
+
+def test_mid_run_failures_are_ordinary_debugging():
+    steps = [
+        edit(0, "src/pkg/core.py"),
+        shell(1, "pytest", observation="1 failed", is_test_run=True, exit_code=1),
+        edit(2, "src/pkg/core.py", payload="fix"),
+        shell(3, "pytest", observation="1 passed", is_test_run=True),
+        submit(4),
+    ]
+    trajectory = make_trajectory(steps)
+    assert [f for f in detect_all(trajectory) if f.detector == "submit_despite_failure"] == []
+
+
+def test_submit_despite_failure_needs_a_submit_and_source_edits():
+    # no submit: termination_anomaly's territory
+    steps = [edit(0, "src/pkg/core.py"),
+             shell(1, "pytest", observation="1 failed", is_test_run=True, exit_code=1)]
+    assert [f for f in detect_all(make_trajectory(steps))
+            if f.detector == "submit_despite_failure"] == []
+    # no source edits (scratch only)
+    steps = [edit(0, "scratch.py"),
+             shell(1, "pytest", observation="1 failed", is_test_run=True, exit_code=1),
+             submit(2)]
+    assert [f for f in detect_all(make_trajectory(steps))
+            if f.detector == "submit_despite_failure"] == []

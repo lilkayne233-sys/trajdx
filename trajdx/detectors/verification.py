@@ -300,3 +300,65 @@ class VerificationGapDetector(Detector):
                 )
 
         return findings
+
+
+@register_detector
+class SubmitDespiteFailureDetector(Detector):
+    """The final verification failed and the agent submitted anyway.
+
+    ``verification_gap`` covers *absence* of checking; this covers the harder
+    case -- the agent did check, saw the run fail, and submitted the patch
+    regardless, with no later passing check.  The last verification step's own
+    outcome (exit code, error fingerprint) is a logged fact, not an inference.
+
+    A failed test run mid-trajectory is ordinary debugging and never fires:
+    only the *last* verification before a real ``submit`` is examined.  Runs
+    without a submit step belong to ``termination_anomaly`` and are skipped.
+    """
+
+    name: ClassVar[str] = "submit_despite_failure"
+    category: ClassVar[Category] = Category.SUBMIT_DESPITE_FAILURE
+    phase: ClassVar[Phase] = Phase.VERIFICATION
+    tier: ClassVar[Tier] = Tier.EXPERIMENTAL
+
+    def detect(self, trajectory: Trajectory) -> list[Finding]:
+        submit_steps = [
+            i for i, s in enumerate(trajectory.steps) if s.kind is StepKind.SUBMIT
+        ]
+        if not submit_steps or not source_edits(trajectory):
+            return []
+        end = submit_steps[-1]
+
+        verify_steps = [i for i in verification_steps(trajectory) if i < end]
+        if not verify_steps:
+            return []
+        last = verify_steps[-1]
+        step = trajectory.steps[last]
+        if not (step.error_kind or (step.exit_code is not None and step.exit_code != 0)):
+            return []
+
+        return [
+            Finding(
+                detector=self.name,
+                category=Category.SUBMIT_DESPITE_FAILURE,
+                phase=Phase.VERIFICATION,
+                severity=Severity.HIGH,
+                start=last,
+                end=end,
+                wasted_steps=(),
+                evidence=(
+                    f"last verification before submit (step {last}) failed"
+                    + (f": {step.error_kind}" if step.error_kind else "")
+                    + (f" (exit {step.exit_code})" if step.exit_code else "")
+                    + f"; submitted at step {end} with no later passing check"
+                ),
+                confidence=0.8,
+                detail={
+                    "pattern": "submitted_after_failed_verification",
+                    "last_verification": last,
+                    "submit_step": end,
+                    "error_kind": step.error_kind,
+                    "exit_code": step.exit_code,
+                },
+            )
+        ]

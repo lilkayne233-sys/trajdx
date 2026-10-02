@@ -188,6 +188,12 @@ class TerminationAnomalyDetector(Detector):
             return []
         if any(s.kind is StepKind.SUBMIT for s in trajectory.steps):
             return []
+        # SWE-agent records the hand-off in exit_status ("submitted",
+        # "submitted (exit_context)") rather than as a submit step; treating
+        # that as "never submitted" produced a wall of false positives on the
+        # 70B review round.  "submitted_no_patch" is empty_patch's territory.
+        if "submitted" in (trajectory.exit_status or "").lower():
+            return []
         return [
             Finding(
                 detector=self.name,

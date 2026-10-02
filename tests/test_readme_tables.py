@@ -23,7 +23,8 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 RAW = ROOT / "data" / "raw" / "openhands_sample.jsonl"
 RAW_V6 = ROOT / "data" / "raw" / "openhands_sample_v6.jsonl"
-V6_LABELS = "data/labels/reviewed_ai_identity_v6.jsonl"
+V7_LABELS = "data/labels/reviewed_ai_identity_v7.jsonl"
+V7_70B_LABELS = "data/labels/reviewed_ai_identity_v7_sweagent_70b.jsonl"
 
 
 needs_raw = pytest.mark.skipif(not RAW.exists(), reason="raw trajectories are gitignored")
@@ -61,7 +62,7 @@ def test_readme_detector_table_matches_evaluate():
             [
                 "scripts/evaluate.py",
                 "--raw", "data/raw/openhands_sample_v6.jsonl",
-                "--labels", V6_LABELS,
+                "--labels", V7_LABELS,
                 "--markdown",
             ]
         ).splitlines()
@@ -93,7 +94,7 @@ def test_readme_precision_claims_match_sample_size():
         [
             "scripts/evaluate.py",
             "--raw", "data/raw/openhands_sample_v6.jsonl",
-            "--labels", V6_LABELS,
+            "--labels", V7_LABELS,
             "--markdown",
         ]
     )
@@ -124,15 +125,15 @@ def test_readme_precision_claims_match_sample_size():
 @needs_raw_v6
 def test_readme_cross_framework_table_matches_evaluate():
     """The SWE-agent cross-framework table (Table 1b) must also stay verbatim."""
-    if not (ROOT / "data" / "raw" / "sweagent_sample_v1.jsonl").exists():
+    if not (ROOT / "data" / "raw" / "sweagent_sample_v2_70b.jsonl").exists():
         pytest.skip("sweagent sample is gitignored")
     generated = [
         line.strip()
         for line in _run(
             [
                 "scripts/evaluate.py",
-                "--raw", "data/raw/sweagent_sample_v1.jsonl",
-                "--labels", "data/labels/reviewed_ai_identity_v6_sweagent.jsonl",
+                "--raw", "data/raw/sweagent_sample_v2_70b.jsonl",
+                "--labels", V7_70B_LABELS,
                 "--markdown",
             ]
         ).splitlines()

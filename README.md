@@ -7,7 +7,7 @@ SWE-bench 这类评测，agent 跑完一个任务只有两个结果：过了 / �
 - 检测链路里**没有大模型**，不联网，不需要 Docker
 - 单条轨迹检测约 3 ms
 - 支持 OpenHands 和 SWE-agent 两种日志格式
-- 当前可信度：1,400 条真实 OpenHands 轨迹上逐条复核了 202 个报警，**96.0% 是真问题**
+- 当前可信度：1,400 条真实 OpenHands 轨迹（Qwen3-Coder-480B）上逐条复核了 247 个报警，老规则的报警 **96% 是真问题**，两条新规则还太弱（见下）
 
 `diagnose` 的输出长这样（示意，实际是 rich 彩色终端渲染）：
 
@@ -40,14 +40,16 @@ python -m trajdx.cli export data/raw/openhands_sample.jsonl --out data/reports/d
 
 ## 它能查出什么
 
-4 条规则，只保留验证得住的。前 3 条靠日志里的硬事实（patch、工具报错、测试记录），第 4 条靠标准答案对照。
+6 条规则。✅ = 复核过且基本全对，🧪 = 有信号但判准还在打磨。所有规则都靠日志里的硬事实（patch、工具报错、测试记录）或标准答案，不做意图猜测。
 
-| 规则 | 大白话 |
-|---|---|
-| `termination_anomaly` | 结束异常：没提交、撞了迭代上限、patch 里没改源码 |
-| `edit_error` | agent 连续被编辑工具拒绝，在和编辑器搏斗 |
-| `verification_gap` | 改完代码后没验证（或最后一次编辑之后没再验证） |
-| `localization_failure` | 改错了文件（和标准答案对照） |
+| | 规则 | 大白话 |
+|---|---|---|
+| ✅ | `termination_anomaly` | 结束异常：没提交、撞了迭代上限、patch 里没改源码 |
+| ✅ | `edit_error` | agent 连续被编辑工具拒绝，在和编辑器搏斗 |
+| ✅ | `verification_gap` | 改完代码后没验证（或最后一次编辑之后没再验证） |
+| 🧪 | `lost_edit` | 编辑成功落盘的文件最终不在 patch 里（工作被丢弃） |
+| 🧪 | `submit_despite_failure` | 最后一次验证失败后无视失败信号照常提交 |
+| 🧪 | `localization_failure` | 改错了文件（和标准答案对照） |
 
 精确率的完整依据在下面「数字有多可信」。`replay` / `findings` 默认只输出可信的规则，全量分析加 `--tier all`。
 
@@ -65,7 +67,7 @@ python -m trajdx.cli export data/raw/openhands_sample.jsonl --out data/reports/d
 
 报警会拿去让独立的 AI 复核（屏蔽任务结局，逐条判 valid / invalid）。两张表由脚本直接生成，测试会校验 README 与脚本输出一致。**先看 n 再看精确率**：n=0（显示「—」）表示该轮没有命中样本，不是 100% 准。
 
-**主样本**：1,400 条 OpenHands 轨迹，202 条 finding，整体精确率 **96.0%**。
+**主样本**：1,400 条 OpenHands 轨迹（Qwen3-Coder-480B-A35B-Instruct，SWE-rebench 全语料即此单模型），247 条 finding，整体精确率 **85.0%**——其中 202 条来自三条老规则（合并 96.8%），两条新规则本轮首次入册、判准未熟（33-35%），拉低了整体。
 
 ```bash
 python scripts/evaluate.py --raw data/raw/openhands_sample_v6.jsonl \
@@ -77,24 +79,30 @@ python scripts/evaluate.py --raw data/raw/openhands_sample_v6.jsonl \
 | `edit_error` | experimental | 100.0% | 21 |
 | `verification_gap` | experimental | 96.2% | 26 |
 | `termination_anomaly` | core | 95.5% | 155 |
+| `submit_despite_failure` | experimental | 35.0% | 20 |
+| `lost_edit` | experimental | 33.3% | 24 |
 | `localization_failure` | experimental | — | 0 |
-| **整体** | | **96.0%** | **202** |
+| **整体** | | **85.0%** | **246** |
 
-**跨框架对照**：188 条 SWE-agent（llama-8B 弱模型）轨迹，227 条 finding，整体 83.3%。排序不变（`edit_error` 最稳），但弱模型会引入新的误报形态，experimental 层的数字必须绑定语料读。
+**跨框架对照**：SWE-agent 框架（nebius/SWE-agent-trajectories 语料，三种模型规模）。第一轮 llama-8B（188 条轨迹，347 条报警，整体 83.3%）暴露了 `no_submit` 把 `submitted (exit_context)` 误读为未提交的 bug；修复后 llama-70B 第二轮（130 条轨迹，106 条报警）的 `termination_anomaly` 回到 95.7%——**精度随 agent 能力下降，但产物级规则（termination、edit_error）跨框架稳定**。
 
 | Detector | Tier | Precision | n |
 |---|---|---|---|
-| `edit_error` | experimental | 100.0% | 59 |
-| `verification_gap` | experimental | 77.6% | 67 |
-| `termination_anomaly` | core | 77.2% | 101 |
+| `edit_error` | experimental | 100.0% | 14 |
+| `termination_anomaly` | core | 95.7% | 23 |
+| `verification_gap` | experimental | 78.8% | 52 |
+| `lost_edit` | experimental | 42.9% | 7 |
+| `submit_despite_failure` | experimental | 10.0% | 10 |
 | `localization_failure` | experimental | — | 0 |
-| **overall** | | **83.3%** | **227** |
+| **overall** | | **76.4%** | **106** |
+
+（llama-405B 侧仅 11 条轨迹、3 条报警，样本不足以做任何精确率声明。新规则在两个语料上都不成熟：复核显示 `lost_edit` 的大量 invalid 是「实验被更好的方案取代」，与真丢失在产物上无法区分，已记录为待修判准。）
 
 `localization_failure` 另有一条不走复核的验证通道：把 agent 改动的文件和标准答案（gold patch）对照。在 300 条轨迹上，失败轨迹的命中率 18.0%，成功轨迹 3.3%——区分度全项目第二，仅次于 `termination_anomaly`。
 
 ## 一个没达到预期的指标
 
-`WSR`（浪费步数占比）本来想用来预测成败，实测 AUC 只有 **0.514**——和抛硬币无异。所以它只作为效率指标使用。真正有信号的是这些过程指标（AUC 越偏离 0.5 越好）：
+`WSR`（浪费步数占比）本来想用来预测成败，实测 AUC 只有 **0.523**——和抛硬币无异。所以它只作为效率指标使用。真正有信号的是这些过程指标（AUC 越偏离 0.5 越好）：
 
 | 指标 | AUC（正类=失败） | 反向 |
 |---|---|---|
@@ -102,7 +110,7 @@ python scripts/evaluate.py --raw data/raw/openhands_sample_v6.jsonl \
 | `source_edits` | 0.618 | — |
 | `tests_per_source_edit` | 0.399 | **0.601** |
 | `test_run_ratio` | 0.426 | **0.574** |
-| `wasted_step_ratio` | 0.514 | — |
+| `wasted_step_ratio` | 0.523 | — |
 
 一句话读法：**成功的运行更短、改的源码更少、每改一次测得更勤。**（有趣的反转：在 8B 弱模型语料上 WSR 的 AUC 跳到 0.687——强模型空转也产出新信息，弱模型的空转是真·原地打转。）
 
@@ -117,13 +125,13 @@ python -m trajdx.cli diagnose data/raw/openhands_sample.jsonl \
   --gold data/gold/swe-rebench-gold.jsonl                # gold 通道，需先跑 fetch_gold.py
 ```
 
-`evaluate.py` 每次都会重跑当前检测器，存储的复核标签只用来对账，绝不直接计分。规则改动之后必须重新复核，旧的判决不能沿用。更多评估口径与标注手册见 [docs/](docs/)。
+`evaluate.py` 每次都会重跑当前检测器，存储的复核标签只用来对账，绝不直接计分。规则改动之后必须重新复核，旧的判决不能沿用。漏报侧的量化（recall 审计：失败且零报警的轨迹里有多少其实有信号）见 [docs/recall_audit.md](docs/recall_audit.md)；评估口径与标注手册见 [docs/](docs/)。
 
 ## 仓库结构
 
 ```
 trajdx/            # 核心包：adapters（两种日志 → 统一步骤）→ fingerprints（24 类错误）
-                   #   → detectors（4 条规则）→ metrics（WSR 与过程指标）→ cli / report
+                   #   → detectors（6 条规则）→ metrics（WSR 与过程指标）→ cli / report
 tests/             # 261 个测试，含「README 数字必须等于脚本输出」的防漂移检查
 scripts/           # 离线工具：拉取轨迹池、抽样、评估、复核闭环、回归门禁
 data/raw|gold/     # gitignore，脚本可重建；data/labels/ 是复核结论，入库
