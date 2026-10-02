@@ -27,7 +27,7 @@ SWE-bench 这类评测，agent 跑完一个任务只有两个结果：过了 / �
 
 ```bash
 pip install -e ".[dev]"
-pytest -q                                   # 261 个测试
+pytest -q                                   # 269 个测试
 
 python -m trajdx.cli detectors              # 有哪些规则
 python -m trajdx.cli adapters               # 支持哪些日志格式
@@ -84,19 +84,19 @@ python scripts/evaluate.py --raw data/raw/openhands_sample_v6.jsonl \
 | `localization_failure` | experimental | — | 0 |
 | **整体** | | **85.0%** | **246** |
 
-**跨框架对照**：SWE-agent 框架（nebius/SWE-agent-trajectories 语料，三种模型规模）。第一轮 llama-8B（188 条轨迹，347 条报警，整体 83.3%）暴露了 `no_submit` 把 `submitted (exit_context)` 误读为未提交的 bug；修复后 llama-70B 第二轮（130 条轨迹，106 条报警）的 `termination_anomaly` 回到 95.7%——**精度随 agent 能力下降，但产物级规则（termination、edit_error）跨框架稳定**。
+**跨框架对照**：SWE-agent 框架（nebius/SWE-agent-trajectories 语料），两轮模型规模对照，两轮均已按当前 6 条规则复核。格式为「精确率 / n」。
 
-| Detector | Tier | Precision | n |
-|---|---|---|---|
-| `edit_error` | experimental | 100.0% | 14 |
-| `termination_anomaly` | core | 95.7% | 23 |
-| `verification_gap` | experimental | 78.8% | 52 |
-| `lost_edit` | experimental | 42.9% | 7 |
-| `submit_despite_failure` | experimental | 10.0% | 10 |
-| `localization_failure` | experimental | — | 0 |
-| **overall** | | **76.4%** | **106** |
+| Detector | llama-8B（188 条轨迹） | llama-70B（130 条轨迹） |
+|---|---|---|
+| `edit_error` | 100.0% / 59 | 100.0% / 14 |
+| `termination_anomaly` | 93.2% / 44 | 95.7% / 23 |
+| `submit_despite_failure` | 90.0% / 10 | 10.0% / 10 |
+| `verification_gap` | 77.6% / 67 | 78.8% / 52 |
+| `lost_edit` | 28.6% / 7 | 42.9% / 7 |
+| `localization_failure` | — / 0 | — / 0 |
+| **overall** | **87.2% / 187** | **76.4% / 106** |
 
-（llama-405B 侧仅 11 条轨迹、3 条报警，样本不足以做任何精确率声明。新规则在两个语料上都不成熟：复核显示 `lost_edit` 的大量 invalid 是「实验被更好的方案取代」，与真丢失在产物上无法区分，已记录为待修判准。）
+（llama-405B 侧仅 11 条轨迹、3 条报警，样本不足以做任何精确率声明。两条新规则在两个语料上都不成熟：`lost_edit` 的大量 invalid 是「实验被更好的方案取代」，与真丢失在产物上无法区分，已记录为待修判准；`submit_despite_failure` 则两极分化——8B 弱模型无视失败信号是真问题（90%），70B 的 invalid 多为「失败后仍在调试并最终修好再提交」。）
 
 `localization_failure` 另有一条不走复核的验证通道：把 agent 改动的文件和标准答案（gold patch）对照。在 300 条轨迹上，失败轨迹的命中率 18.0%，成功轨迹 3.3%——区分度全项目第二，仅次于 `termination_anomaly`。
 
@@ -132,7 +132,7 @@ python -m trajdx.cli diagnose data/raw/openhands_sample.jsonl \
 ```
 trajdx/            # 核心包：adapters（两种日志 → 统一步骤）→ fingerprints（24 类错误）
                    #   → detectors（6 条规则）→ metrics（WSR 与过程指标）→ cli / report
-tests/             # 261 个测试，含「README 数字必须等于脚本输出」的防漂移检查
+tests/             # 269 个测试，含「README 数字必须等于脚本输出」的防漂移检查
 scripts/           # 离线工具：拉取轨迹池、抽样、评估、复核闭环、回归门禁
 data/raw|gold/     # gitignore，脚本可重建；data/labels/ 是复核结论，入库
 docs/              # 标注手册、关键修复的验证记录

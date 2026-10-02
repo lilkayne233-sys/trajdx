@@ -24,6 +24,7 @@ ROOT = Path(__file__).resolve().parents[1]
 RAW = ROOT / "data" / "raw" / "openhands_sample.jsonl"
 RAW_V6 = ROOT / "data" / "raw" / "openhands_sample_v6.jsonl"
 V7_LABELS = "data/labels/reviewed_ai_identity_v7.jsonl"
+V7_8B_LABELS = "data/labels/reviewed_ai_identity_v7_sweagent_8b.jsonl"
 V7_70B_LABELS = "data/labels/reviewed_ai_identity_v7_sweagent_70b.jsonl"
 
 
@@ -124,28 +125,53 @@ def test_readme_precision_claims_match_sample_size():
 
 @needs_raw_v6
 def test_readme_cross_framework_table_matches_evaluate():
-    """The SWE-agent cross-framework table (Table 1b) must also stay verbatim."""
-    if not (ROOT / "data" / "raw" / "sweagent_sample_v2_70b.jsonl").exists():
-        pytest.skip("sweagent sample is gitignored")
-    generated = [
-        line.strip()
-        for line in _run(
-            [
-                "scripts/evaluate.py",
-                "--raw", "data/raw/sweagent_sample_v2_70b.jsonl",
-                "--labels", V7_70B_LABELS,
-                "--markdown",
-            ]
-        ).splitlines()
-        if line.strip()
-    ]
-    detector_rows = [line for line in generated if line.startswith("| `")]
-    assert detector_rows, "evaluate.py --markdown produced no detector rows"
+    """The merged SWE-agent table must quote both rounds exactly.
 
-    for readme in ("README.md",):
-        text = (ROOT / readme).read_text(encoding="utf-8")
-        for row in detector_rows:
-            assert row in text, f"{readme} is stale, missing cross-framework row:\n  {row}"
+    The README merges the 8B and 70B rounds into one two-column table, so the
+    verbatim check is done per cell: every generated "precision | n" pair for a
+    detector must appear in that detector's README row, and each round's
+    overall must appear in the overall row.
+    """
+    rounds = [
+        ("data/raw/sweagent_sample_v1.jsonl", V7_8B_LABELS, "llama-8B"),
+        ("data/raw/sweagent_sample_v2_70b.jsonl", V7_70B_LABELS, "llama-70B"),
+    ]
+    per_round = {}
+    for raw, labels, name in rounds:
+        if not (ROOT / raw).exists():
+            pytest.skip("sweagent sample is gitignored")
+        output = _run(["scripts/evaluate.py", "--raw", raw, "--labels", labels, "--markdown"])
+        rows = dict(
+            (detector, (precision, n))
+            for detector, precision, n in re.findall(
+                r"^\| `(\w+)` \| \w+ \| ([\d.]+%|—) \| (\d+) \|$", output, re.M
+            )
+        )
+        overall = re.search(
+            r"\*\*overall\*\* \| \| \*\*([\d.]+%)\*\* \| \*\*(\d+)\*\*", output
+        )
+        assert overall, f"{name}: could not parse the overall row"
+        rows["overall"] = (overall.group(1), overall.group(2))
+        per_round[name] = rows
+
+    text = (ROOT / "README.md").read_text(encoding="utf-8")
+    merged = {}
+    for line in text.splitlines():
+        m = re.match(r"^\| `(\w+)` \||^\| \*\*overall\*\* \|", line)
+        if m:
+            key = m.group(1) or "overall"
+            cells = [c.strip() for c in line.split("|")]
+            merged[key] = cells
+    for name, rows in per_round.items():
+        for detector, (precision, n) in rows.items():
+            row = merged.get(detector)
+            assert row, f"README has no merged row for {detector}"
+            expected_cell = (
+                f"**{precision} / {n}**" if detector == "overall" else f"{precision} / {n}"
+            )
+            assert expected_cell in row, (
+                f"{name} {detector}: README lacks the cell {expected_cell}; row is {row}"
+            )
 
 
 # --------------------------------------------------------------------------
