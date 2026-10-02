@@ -3,8 +3,7 @@
 
 The evaluation sample (300 trajectories) was drawn from the head of the
 SWE-rebench OpenHands corpus via the datasets-server API.  To validate rules
-that fired rarely on that sample -- ``blind_search`` and ``weak_verification``
-in particular -- more trajectories are needed.  This draws them from the local
+that fired rarely on that sample, more trajectories are needed.  This draws them from the local
 pool file (``scripts/fetch_openhands_pool.py`` output), excluding every
 trajectory already present in existing samples, stratified by ``resolved`` so
 the expansion keeps the same outcome balance as the original sample.

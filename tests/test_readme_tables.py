@@ -70,7 +70,7 @@ def test_readme_detector_table_matches_evaluate():
     detector_rows = [line for line in generated if line.startswith("| `")]
     assert detector_rows, "evaluate.py --markdown produced no detector rows"
 
-    for readme in ("README.md", "README.en.md"):
+    for readme in ("README.md",):
         text = (ROOT / readme).read_text(encoding="utf-8")
         for row in detector_rows:
             assert row in text, f"{readme} is stale, missing row:\n  {row}"
@@ -141,7 +141,7 @@ def test_readme_cross_framework_table_matches_evaluate():
     detector_rows = [line for line in generated if line.startswith("| `")]
     assert detector_rows, "evaluate.py --markdown produced no detector rows"
 
-    for readme in ("README.md", "README.en.md"):
+    for readme in ("README.md",):
         text = (ROOT / readme).read_text(encoding="utf-8")
         for row in detector_rows:
             assert row in text, f"{readme} is stale, missing cross-framework row:\n  {row}"
@@ -158,7 +158,7 @@ def test_readme_process_shape_matches_discrimination():
     aucs = dict(re.findall(r"^(\w+)\s+(0\.\d+)$", output, re.M))
     assert aucs, "could not parse AUC values"
 
-    for readme in ("README.md", "README.en.md"):
+    for readme in ("README.md",):
         text = (ROOT / readme).read_text(encoding="utf-8")
         for metric in (
             "total_steps",

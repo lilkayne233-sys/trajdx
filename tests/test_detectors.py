@@ -11,13 +11,10 @@ from __future__ import annotations
 from trajdx.detectors import detect_all
 from trajdx.detectors.base import Category, Severity
 from trajdx.detectors.edit_error import EditErrorDetector
-from trajdx.detectors.environment import EnvironmentStuckDetector
-from trajdx.detectors.execution_loop import ExecutionLoopDetector
-from trajdx.detectors.localization import BlindSearchDetector, RedundantReadDetector
+from trajdx.detectors.localization import LocalizationFailureDetector
 from trajdx.detectors.termination import TerminationAnomalyDetector
 from trajdx.detectors.verification import (
     VerificationGapDetector,
-    WeakVerificationDetector,
     source_edit_events,
     source_edits,
 )
@@ -26,447 +23,8 @@ from trajdx.schema import AgentStep, StepKind
 from tests.conftest import edit, make_trajectory, read, shell, submit, thought
 
 # --------------------------------------------------------------------------
-# Execution loop
-# --------------------------------------------------------------------------
-
-
-def test_exact_loop_detects_identical_failing_command():
-    observation = "bash: pytest: command not found"
-    steps = [shell(i, "pytest tests/", observation=observation) for i in range(3)]
-    findings = ExecutionLoopDetector().detect(make_trajectory(steps))
-    exact = [f for f in findings if f.detail["pattern"] == "exact"]
-    assert exact, "three identical failing commands is a loop"
-    assert exact[0].wasted_steps == (1, 2), "the first attempt is not waste"
-    assert exact[0].severity is Severity.HIGH
-
-
-def test_interrupt_keystrokes_are_not_repeated_commands():
-    """Reviewed FP: each `C-c` cancels a *different* process.
-
-    Byte-identical commands, unrelated actions -- the exact pattern read two
-    cancellations as a repeated failing command.
-    """
-    steps = [
-        shell(0, "python -m pytest tests/", observation="running", is_test_run=True),
-        shell(1, "C-c", observation=""),
-        shell(2, "C-c", observation=""),
-        shell(3, "C-c", observation=""),
-        submit(4),
-    ]
-    findings = ExecutionLoopDetector().detect(make_trajectory(steps))
-    assert findings == [], "cancelling processes is bookkeeping, not a loop"
-
-
-def test_revert_cycle_fires_on_edit_revert_alternation():
-    """The rubric's revert-and-re-apply thrash, previously invisible to the rules."""
-    steps = [
-        edit(0, "src/pkg/core.py", payload="v1"),
-        shell(1, "git checkout src/pkg/core.py", observation="restored"),
-        edit(2, "src/pkg/core.py", payload="v2"),
-        shell(3, "git checkout src/pkg/core.py", observation="restored"),
-        submit(4),
-    ]
-    findings = ExecutionLoopDetector().detect(make_trajectory(steps))
-    cycles = [f for f in findings if f.detail["pattern"] == "revert_cycle"]
-    assert cycles, "two edit/revert rounds on one file is thrashing"
-    assert cycles[0].detail["cycles"] == 2
-    assert cycles[0].wasted_steps[0] > cycles[0].start, "the first edit was legitimate"
-
-
-def test_single_edit_then_revert_is_not_a_cycle():
-    """One discarded experiment is debugging; the rule needs repetition."""
-    steps = [
-        edit(0, "src/pkg/core.py", payload="v1"),
-        shell(1, "git checkout src/pkg/core.py", observation="restored"),
-        submit(2),
-    ]
-    findings = ExecutionLoopDetector().detect(make_trajectory(steps))
-    assert not [f for f in findings if f.detail["pattern"] == "revert_cycle"]
-
-
-def test_stash_pop_is_not_a_revert():
-    """Reviewed FP: edit -> stash -> edit -> stash-pop is pristine-tree diagnosis.
-
-    ``git stash pop`` *restores* the agent's work; counting it as a discard made
-    the revert-cycle rule flag a legitimate diagnostic sequence.
-    """
-    steps = [
-        edit(0, "src/pkg/core.py", payload="v1"),
-        shell(1, "git stash", observation="Saved working directory"),
-        edit(2, "src/pkg/core.py", payload="v2"),
-        shell(3, "git stash pop", observation="restored"),
-        submit(4),
-    ]
-    findings = ExecutionLoopDetector().detect(make_trajectory(steps))
-    assert not [f for f in findings if f.detail["pattern"] == "revert_cycle"]
-
-
-def test_exact_and_error_loop_for_same_occurrences_is_reported_once():
-    steps = [
-        shell(i, "pytest", observation="bash: pytest: command not found")
-        for i in range(3)
-    ]
-    findings = ExecutionLoopDetector().detect(make_trajectory(steps))
-    assert [f.detail["pattern"] for f in findings] == ["exact"]
-
-
-# --------------------------------------------------------------------------
-# v4 review round: the nine rejected findings, one regression test each
-# --------------------------------------------------------------------------
-
-
-def test_exact_loop_suppressed_by_environment_rebuild():
-    """v4 invalid (dvc-3132): `cat config` between fixture rebuilds is a checkpoint.
-
-    The three identical `cat`s observed a *different world* each time: the
-    fixture directory was deleted, recreated and re-configured in between.
-    """
-    steps = [
-        shell(0, "cd /tmp/case_test && cat .dvc/config", observation="config v1"),
-        shell(1, "cd /tmp && rm -rf case_test && mkdir case_test && dvc init"),
-        shell(2, "cd /tmp/case_test && cat .dvc/config", observation="config empty"),
-        shell(3, "dvc remote modify myremote testoption testvalue"),
-        shell(4, "cd /tmp/case_test && cat .dvc/config", observation="config v1"),
-        submit(5),
-    ]
-    findings = ExecutionLoopDetector().detect(make_trajectory(steps))
-    assert not [f for f in findings if f.detail["pattern"] == "exact"]
-
-
-def test_exact_loop_suppressed_by_package_install():
-    """v4 invalid (pandas-61146): each retry followed a different repair attempt."""
-    steps = [
-        shell(0, "python -c 'import pandas'", observation="Traceback: import error"),
-        shell(1, "pip install -e . --no-build-isolation", observation="installed"),
-        shell(2, "rm /opt/envs/testbed/site-packages/_pandas_editable_loader.py"),
-        shell(3, "python -c 'import pandas'", observation="Traceback: import error"),
-        shell(4, "pip install pandas==2.2.3", observation="already satisfied"),
-        shell(5, "python -c 'import pandas'", observation="Traceback: import error"),
-        submit(6),
-    ]
-    findings = ExecutionLoopDetector().detect(make_trajectory(steps))
-    assert not [f for f in findings if f.detail["pattern"] == "exact"]
-
-
-def test_exact_loop_suppressed_by_cache_cleanup():
-    """v4 invalid (conan-2708): repro re-runs after clearing stale bytecode."""
-    steps = [
-        shell(0, "python reproduce_issue.py", observation="repro output"),
-        shell(1, "find . -name '__pycache__' -type d -exec rm -rf {} +"),
-        shell(2, "find . -name '*.pyc' -delete"),
-        shell(3, "python reproduce_issue.py", observation="repro output"),
-        shell(4, "python reproduce_issue.py", observation="repro output"),
-        submit(5),
-    ]
-    findings = ExecutionLoopDetector().detect(make_trajectory(steps))
-    assert not [f for f in findings if f.detail["pattern"] == "exact"]
-
-
-def test_repeated_identical_failures_with_no_intervention_still_fire():
-    """The widened gate must not swallow the real signal."""
-    steps = [
-        shell(i, "pytest tests/", observation="bash: pytest: command not found")
-        for i in range(3)
-    ]
-    findings = ExecutionLoopDetector().detect(make_trajectory(steps))
-    assert [f for f in findings if f.detail["pattern"] == "exact"]
-
-
-def test_reads_with_different_view_ranges_are_distinct_actions():
-    """v4 invalid (scrapy-5320): a full-file look and a drill-in differ.
-
-    Two views of one file through different ranges answer different questions;
-    grouping them by path alone made ordinary navigation read as a loop.
-    """
-    steps = [
-        read(0, "scrapy/utils/response.py", observation="full file"),
-        read(1, "scrapy/utils/response.py", observation="line 80 region",
-             view_range=[80, 120]),
-        shell(2, "python reproduce_issue.py", observation="repro output"),
-        read(3, "scrapy/utils/response.py", observation="line 80 region",
-             view_range=[80, 120]),
-        submit(4),
-    ]
-    findings = ExecutionLoopDetector().detect(make_trajectory(steps))
-    assert not [f for f in findings if f.detail["pattern"] == "exact"]
-
-
-def test_error_loop_ignores_warning_fingerprints():
-    """v4 invalid (django-json-api-1074): a repeated DeprecationWarning is noise.
-
-    Warnings recur on every run by design; they are not a failure the agent
-    fails to fix.
-    """
-    warning = "generic_error:DeprecationWarning: pkg_resources is deprecated as an API"
-    steps = [
-        shell(0, "pytest tests/", observation="DeprecationWarning: pkg_resources",
-              error_fp=warning),
-        read(1, "tests/test_utils.py"),
-        shell(2, "pytest tests/test_utils.py", observation="DeprecationWarning: pkg_resources",
-              error_fp=warning),
-        shell(3, "pytest -q", observation="DeprecationWarning: pkg_resources",
-              error_fp=warning),
-        submit(4),
-    ]
-    findings = ExecutionLoopDetector().detect(make_trajectory(steps))
-    assert not [f for f in findings if f.detail["pattern"] == "error"]
-
-
-def test_error_loop_suppressed_by_git_stash_baseline():
-    """v4 invalid (textual-3872): stash -> baseline run -> pop sits between failures.
-
-    The middle pytest failure ran on the *stashed original* code on purpose; a
-    baseline A/B check is diagnosis, and the state operation between the
-    failures is the tell.
-    """
-    steps = [
-        shell(0, "pytest tests/toggles/", observation="AssertionError: assert 4 == 0"),
-        read(1, "tests/toggles/test_radioset.py"),
-        shell(2, "git stash", observation="Saved working directory"),
-        shell(3, "pytest tests/toggles/", observation="AssertionError: assert 4 == 0"),
-        shell(4, "git stash pop", observation="restored"),
-        shell(5, "pytest tests/toggles/", observation="AssertionError: assert 4 == 0"),
-        submit(6),
-    ]
-    findings = ExecutionLoopDetector().detect(make_trajectory(steps))
-    assert not [f for f in findings if f.detail["pattern"] == "error"]
-
-
-def test_revert_cycle_ignores_a_stash_that_is_popped_back():
-    """v4 invalid (sqlglot-4110): stash -> baseline check -> pop is not a revert.
-
-    The work comes back, so nothing was discarded -- the same family as the
-    mne-tools ruling that introduced the stash-pop exclusion.
-    """
-    steps = [
-        edit(0, "src/pkg/gen.py", payload="v1"),
-        shell(1, "git stash", observation="Saved working directory"),
-        shell(2, "pytest tests/", observation="baseline output"),
-        shell(3, "git stash pop", observation="restored"),
-        edit(4, "src/pkg/gen.py", payload="v2"),
-        shell(5, "git stash", observation="Saved working directory"),
-        shell(6, "pytest tests/", observation="baseline output"),
-        shell(7, "git stash pop", observation="restored"),
-        submit(8),
-    ]
-    findings = ExecutionLoopDetector().detect(make_trajectory(steps))
-    assert not [f for f in findings if f.detail["pattern"] == "revert_cycle"]
-
-
-def test_revert_cycle_still_fires_on_stashes_that_are_never_restored():
-    """An unrestored stash really did throw the work away."""
-    steps = [
-        edit(0, "src/pkg/core.py", payload="v1"),
-        shell(1, "git stash", observation="Saved working directory"),
-        edit(2, "src/pkg/core.py", payload="v2"),
-        shell(3, "git stash", observation="Saved working directory"),
-        submit(4),
-    ]
-    findings = ExecutionLoopDetector().detect(make_trajectory(steps))
-    cycles = [f for f in findings if f.detail["pattern"] == "revert_cycle"]
-    assert cycles, "two unrecovered discards of one file is thrashing"
-
-
-def test_exact_loop_suppressed_by_package_install_intervening_only_once():
-    """One intervention inside the window is enough to break the loop claim."""
-    steps = [
-        shell(0, "python -c 'import pkg'", observation="Traceback: import error"),
-        shell(1, "pip install -e .", observation="installed"),
-        shell(2, "python -c 'import pkg'", observation="Traceback: import error"),
-        shell(3, "python -c 'import pkg'", observation="Traceback: import error"),
-        submit(4),
-    ]
-    findings = ExecutionLoopDetector().detect(make_trajectory(steps))
-    assert not [f for f in findings if f.detail["pattern"] == "exact"]
-
-
-def test_error_only_loop_survives_higher_exact_threshold():
-    steps = [
-        shell(i, "pytest", observation="bash: pytest: command not found")
-        for i in range(3)
-    ]
-    findings = ExecutionLoopDetector(min_repeats=5).detect(make_trajectory(steps))
-    assert [f.detail["pattern"] for f in findings] == ["error"]
-    assert findings[0].detail["occurrences"] == [0, 1, 2]
-
-
-def test_error_only_loop_survives_distinct_exact_keys_with_same_coarse_key():
-    steps = [
-        shell(i, f"python /tmp/run{i}/probe.py", observation="ValueError: broken")
-        for i in range(3)
-    ]
-    assert len({s.action_key for s in steps}) == 1
-    assert len({s.exact_key for s in steps}) == 3
-    findings = ExecutionLoopDetector().detect(make_trajectory(steps))
-    assert [f.detail["pattern"] for f in findings] == ["error"]
-
-
-def test_error_only_loop_survives_shorter_exact_window():
-    steps = [
-        shell(0, "pytest", observation="bash: pytest: command not found"),
-        thought(1),
-        shell(2, "pytest", observation="bash: pytest: command not found"),
-        thought(3),
-        shell(4, "pytest", observation="bash: pytest: command not found"),
-    ]
-    findings = ExecutionLoopDetector(window=3).detect(make_trajectory(steps))
-    assert [f.detail["pattern"] for f in findings] == ["error"]
-
-
-def test_partial_exact_coverage_does_not_hide_wider_error_loop():
-    steps = [
-        shell(i, "pytest" if i < 3 else "python -m pytest", observation="ValueError: broken")
-        for i in range(4)
-    ]
-    findings = ExecutionLoopDetector().detect(make_trajectory(steps))
-    assert [f.detail["pattern"] for f in findings] == ["exact", "error"]
-    assert findings[1].detail["occurrences"] == [0, 1, 2, 3]
-
-
-def test_edit_churn_on_one_file_is_not_a_loop():
-    """Regression: grouping edits by path made ordinary editing look repetitive."""
-    steps = [edit(i, "src/pkg/core.py", payload=f"revision {i}") for i in range(5)]
-    findings = ExecutionLoopDetector().detect(make_trajectory(steps))
-    assert not [f for f in findings if f.detail["pattern"] == "exact"]
-
-
-def test_loop_requires_identical_observation():
-    """Same command, but the world changed between runs -> not waste."""
-    steps = [
-        shell(0, "cat src/a.py", observation="version one"),
-        shell(1, "cat src/a.py", observation="version two"),
-        shell(2, "cat src/a.py", observation="version three"),
-    ]
-    assert ExecutionLoopDetector().detect(make_trajectory(steps)) == []
-
-
-def test_error_loop_detects_stuck_error_across_different_actions():
-    """Same failure from three different commands, nothing changed in between."""
-    observation = "ModuleNotFoundError: No module named 'widget'"
-    steps = [
-        shell(0, "python run.py", observation=observation),
-        shell(1, "python -m pytest tests/", observation=observation, is_test_run=True),
-        shell(2, "python setup.py test", observation=observation, is_test_run=True),
-    ]
-    findings = ExecutionLoopDetector().detect(make_trajectory(steps))
-    error = [f for f in findings if f.detail["pattern"] == "error"]
-    assert error and error[0].severity is Severity.HIGH
-
-
-def test_an_edit_between_repetitions_is_not_a_loop():
-    """Regression: this was the detector's dominant false-positive mode.
-
-    Re-running a command after changing a file is how an agent tests a
-    hypothesis.  On 32 annotated findings, repetitions with an intervening edit
-    were judged valid 3.4% of the time; without one, 66.7%.
-    """
-    observation = "ModuleNotFoundError: No module named 'widget'"
-    steps = [
-        shell(0, "python run.py", observation=observation),
-        edit(1, "src/a.py", payload="one"),
-        shell(2, "python run.py", observation=observation),
-        edit(3, "src/b.py", payload="two"),
-        shell(4, "python run.py", observation=observation),
-    ]
-    assert ExecutionLoopDetector().detect(make_trajectory(steps)) == []
-
-
-def test_oscillation_detects_alternation():
-    steps = []
-    for _ in range(4):
-        steps.append(shell(len(steps), "python probe_a.py", observation="same output"))
-        steps.append(shell(len(steps), "python probe_b.py", observation="same output"))
-    findings = ExecutionLoopDetector().detect(make_trajectory(steps))
-    oscillation = [f for f in findings if f.detail["pattern"] == "oscillation"]
-    assert oscillation
-    assert oscillation[0].detail["cycles"] >= 3
-
-
-# --------------------------------------------------------------------------
-# Environment
-# --------------------------------------------------------------------------
-
-
-def test_environment_stuck_on_repeated_failing_install():
-    observation = "ERROR: Could not find a version that satisfies the requirement foo"
-    steps = [shell(i, "pip install foo", observation=observation) for i in range(3)]
-    findings = EnvironmentStuckDetector().detect(make_trajectory(steps))
-    assert findings and findings[0].category is Category.ENVIRONMENT_STUCK
-
-
-def test_environment_stuck_ignores_cd_prefixed_commands():
-    """Regression: `cd` made this detector fire on 95% of all runs."""
-    observation = "Traceback (most recent call last)\nValueError: boom"
-    steps = [
-        shell(i, f"cd /workspace/repo && python repro_{i}.py", observation=observation)
-        for i in range(4)
-    ]
-    assert EnvironmentStuckDetector().detect(make_trajectory(steps)) == []
-
-
-def test_environment_stuck_threshold_is_deliberately_conservative():
-    """Three failures, not two.
-
-    The shipped corpus contains only eight failing setup/install commands in 300
-    runs, so this rule is starved rather than mis-tuned.  Lowering the bar to two
-    would add a single unvalidated finding, and the one annotated
-    `environment_stuck` finding was judged invalid -- so the threshold is pinned
-    here to make any future loosening a deliberate, evidenced change.
-    """
-    observation = "ERROR: Could not find a version that satisfies the requirement foo"
-    two = [shell(i, "pip install foo", observation=observation) for i in range(2)]
-    assert EnvironmentStuckDetector().detect(make_trajectory(two)) == []
-
-    three = [shell(i, "pip install foo", observation=observation) for i in range(3)]
-    assert EnvironmentStuckDetector().detect(make_trajectory(three))
-
-
-def test_timeout_wall_needs_a_cluster_not_a_single_slow_run():
-    """One timeout is usually a legitimately slow test run, not a stuck sandbox."""
-    timeout = "Command timed out after 120 seconds"
-    single = [shell(0, "pytest tests/", observation=timeout), submit(1)]
-    assert EnvironmentStuckDetector().detect(make_trajectory(single)) == []
-
-    wall = [shell(i, "pytest tests/", observation=timeout) for i in range(3)]
-    assert EnvironmentStuckDetector().detect(make_trajectory(wall))
-
-
-# --------------------------------------------------------------------------
 # Verification
 # --------------------------------------------------------------------------
-
-
-def test_weak_verification_ignores_scratch_scripts():
-    """Regression: writing and running reproduce_issue.py is verification."""
-    steps = [edit(i, f"repro_{i}.py", payload="x") for i in range(6)]
-    steps.append(shell(6, "python repro_5.py", observation="ran"))
-    steps.append(submit(7))
-    assert WeakVerificationDetector().detect(make_trajectory(steps)) == []
-
-
-def test_weak_verification_fires_on_untested_source_churn():
-    steps = [
-        edit(i, f"src/pkg/file_{i}.py", payload="x") for i in range(6)
-    ]
-    steps.append(submit(6))
-    findings = WeakVerificationDetector().detect(make_trajectory(steps))
-    assert findings
-    assert findings[0].detail["n_edits"] == 6
-    assert findings[0].detail["n_tests"] == 0
-    assert findings[0].n_wasted == 0, "a coverage gap is not wasted steps"
-
-
-def test_weak_verification_collapses_unverified_rewrites_of_one_region():
-    """Reviewed FP: N rewrites of one region must not read as N edits."""
-    steps = []
-    for i in range(6):
-        s = edit(i, "src/pkg/core.py", payload=f"v{i}")
-        s.args["old_str"] = "def f(x):\n    return x"
-        steps.append(s)
-    steps.append(submit(6))
-    # One continuous unverified session on one region: the intensity rule no
-    # longer sees "6 edits, 0 tests", it sees the 1 piece of work it was.
-    assert WeakVerificationDetector().detect(make_trajectory(steps)) == []
 
 
 def test_source_edits_separates_library_from_scratch():
@@ -507,7 +65,6 @@ def test_repeated_edit_after_test_is_a_new_unverified_session():
     assert findings[0].detail == {
         "pattern": "stale_verification", "last_test": 1, "last_edit": 2
     }
-    assert WeakVerificationDetector().detect(trajectory) == []
 
 
 def test_edit_immediately_before_submit_is_stale_even_with_default_grace():
@@ -632,24 +189,6 @@ def test_script_creation_after_the_last_verification_closes_nothing():
     assert VerificationGapDetector().detect(traj) == []
 
 
-def test_weak_verification_credits_agent_script_runs():
-    """Three source edits verified by three self-written-script runs: healthy."""
-    steps = [
-        edit(0, "repro_probe.py", verb="create",
-             observation="File created successfully at: /workspace/repro_probe.py"),
-        edit(1, "src/pkg/core.py", payload="v1"),
-        shell(2, "python repro_probe.py", observation="ran"),
-        edit(3, "src/pkg/other.py", payload="v1"),
-        shell(4, "python repro_probe.py", observation="ran"),
-        edit(5, "src/pkg/third.py", payload="v1"),
-        shell(6, "python repro_probe.py", observation="ran"),
-        submit(7),
-    ]
-    # Without script-run credit this is 3 edits / 0 tests and fires; with it,
-    # intensity is 1.0 and the run is not suspicious.
-    assert WeakVerificationDetector().detect(make_trajectory(steps)) == []
-
-
 # --------------------------------------------------------------------------
 # Edit errors
 # --------------------------------------------------------------------------
@@ -766,19 +305,6 @@ def test_empty_patch_charges_every_step():
 # --------------------------------------------------------------------------
 
 
-def test_redundant_read_needs_identical_content():
-    same = [read(i, "src/pkg/core.py", observation="identical body") for i in range(3)]
-    findings = RedundantReadDetector().detect(make_trajectory(same))
-    assert [f for f in findings if f.detail["pattern"] == "redundant_read"]
-
-    different = [
-        read(0, "src/pkg/core.py", observation="first half"),
-        read(1, "src/pkg/core.py", observation="second half"),
-        read(2, "src/pkg/core.py", observation="third section"),
-    ]
-    assert RedundantReadDetector().detect(make_trajectory(different)) == []
-
-
 # --------------------------------------------------------------------------
 # Waste accounting
 # --------------------------------------------------------------------------
@@ -789,16 +315,16 @@ def test_waste_attribution_is_a_partition():
     from trajdx.detectors.base import Finding, Phase
 
     a = Finding(
-        detector="a", category=Category.EXECUTION_LOOP, phase=Phase.EXECUTION,
+        detector="a", category=Category.EDIT_ERROR, phase=Phase.EXECUTION,
         severity=Severity.HIGH, start=0, end=2, wasted_steps=(1, 2), evidence="",
     )
     b = Finding(
-        detector="b", category=Category.BLIND_SEARCH, phase=Phase.PLANNING,
+        detector="b", category=Category.LOCALIZATION_FAILURE, phase=Phase.PLANNING,
         severity=Severity.LOW, start=1, end=4, wasted_steps=(2, 3, 4), evidence="",
     )
     attribution = attribute_waste([a, b])
-    assert attribution == {1: "execution_loop", 2: "execution_loop", 3: "blind_search",
-                           4: "blind_search"}
+    assert attribution == {1: "edit_error", 2: "edit_error", 3: "localization_failure",
+                           4: "localization_failure"}
 
 
 def test_wasted_step_ratio_never_exceeds_one():
@@ -849,12 +375,10 @@ def test_core_tier_is_non_empty_and_validated():
     core = [name for name, cls in REGISTRY.items() if cls.tier is Tier.CORE]
     assert core, "nothing would be reported by default"
     assert "termination_anomaly" in core
-    # `redundant_read` scored 4/4 in a round whose human verdicts are not shipped,
-    # so no reproducible sample supports its precision.  A core tier asserts
-    # measured precision, so it stays experimental until a shipped round backs it;
+    # A core tier asserts measured precision; everything that has not cleared the
+    # 88% bar on a shipped review round stays experimental.
     # tests/test_readme_tables.py enforces that reading of the README.
-    assert "redundant_read" not in core
-    assert "execution_loop" not in core
+    assert "verification_gap" not in core
 
 
 def test_detect_all_respects_the_tier_gate():
@@ -899,138 +423,9 @@ def test_a_shell_observation_does_produce_an_error_fingerprint():
     assert step.failed
 
 
-def test_plan_steps_are_not_treated_as_looping_actions():
-    """`task_tracker` bookkeeping repeated is a habit, not waste."""
-    from trajdx.schema import StepKind
-
-    steps = [
-        AgentStep(
-            idx=i,
-            kind=StepKind.PLAN,
-            args={"verb": "plan", "task_list": []},
-            raw_action="task_tracker plan",
-            observation="Tasks updated.",
-        )
-        for i in range(5)
-    ]
-    findings = ExecutionLoopDetector().detect(make_trajectory(steps))
-    assert findings == []
-
-
-def test_views_of_different_regions_are_not_a_redundant_read():
-    """Regression: prefix-only hashing made distinct regions collide."""
-    base = "[File: /testbed/src/pkg/core.py (2000 lines total)]\n"
-    steps = [
-        read(0, "src/pkg/core.py", observation=base + "(340 more lines above)\ndef a(): pass\n"),
-        read(1, "src/pkg/core.py", observation=base + "(350 more lines above)\ndef b(): pass\n"),
-        read(2, "src/pkg/core.py", observation=base + "(360 more lines above)\ndef c(): pass\n"),
-    ]
-    assert RedundantReadDetector().detect(make_trajectory(steps)) == []
-
-
 # --------------------------------------------------------------------------
 # Rulings from the pilot annotation round
 # --------------------------------------------------------------------------
-
-
-def test_a_re_read_after_a_revert_is_not_redundant():
-    """Ruling: after the working tree is rolled back, looking again is justified.
-
-    Three pilot findings hinged on this.  The content came back byte-identical
-    only *because* the agent had reverted its own experiment, so the second look
-    bought information -- it is the only way to know what the file now says.
-    """
-    body = "def parse(): ...\n"
-    steps = [
-        read(0, "src/pkg/core.py", observation=body),
-        shell(1, "cd /repo && git checkout HEAD -- src/pkg/core.py"),
-        read(2, "src/pkg/core.py", observation=body),
-        shell(3, "cd /repo && git checkout HEAD -- src/pkg/core.py"),
-        read(4, "src/pkg/core.py", observation=body),
-    ]
-    assert RedundantReadDetector().detect(make_trajectory(steps)) == []
-
-
-def test_an_edit_between_reads_also_justifies_the_second_look():
-    body = "def parse(): ...\n"
-    steps = [
-        read(0, "src/pkg/core.py", observation=body),
-        edit(1, "src/pkg/core.py", payload="changed"),
-        read(2, "src/pkg/core.py", observation=body),
-        edit(3, "src/pkg/core.py", payload="changed again"),
-        read(4, "src/pkg/core.py", observation=body),
-    ]
-    assert RedundantReadDetector().detect(make_trajectory(steps)) == []
-
-
-def test_three_untouched_identical_reads_are_still_redundant():
-    """The rule must keep firing when nothing moved in between."""
-    body = "def parse(): ...\n"
-    steps = [read(i, "src/pkg/core.py", observation=body) for i in range(3)]
-    findings = RedundantReadDetector().detect(make_trajectory(steps))
-    assert len(findings) == 1
-    assert findings[0].detail["reads"] == [0, 1, 2]
-
-
-def test_opening_readme_and_config_is_not_blind_search():
-    """Ruling: the opening moves of a run are orientation, not investigation."""
-    steps = [
-        read(0, "README.md", observation="install me"),
-        read(1, "pyproject.toml", observation="[project]"),
-        read(2, "requirements.txt", observation="-e ."),
-        read(3, "environment.yml", observation="name: x"),
-        read(4, "pytest.ini", observation="[pytest]"),
-        edit(5, "src/pkg/core.py"),
-        submit(6),
-    ]
-    assert BlindSearchDetector().detect(make_trajectory(steps)) == []
-
-
-def test_documentation_reads_do_not_lengthen_a_streak():
-    """Docs read *inside* a run are orientation too, not attempts to locate."""
-    source = [read(i, "src/pkg/module_%d.py" % i) for i in range(4)]
-    docs = [read(10, "docs/index.rst"), read(11, "CHANGELOG.md")]
-    more = [read(20 + i, "src/pkg/other_%d.py" % i) for i in range(4)]
-    steps = source + docs + more + [edit(30, "src/pkg/core.py"), submit(31)]
-    assert BlindSearchDetector().detect(make_trajectory(steps)) == []
-
-
-def test_a_real_streak_of_source_reads_still_fires():
-    # 13 reads, of which the first `warmup` (=3) are excluded, leaves the
-    # min_run of 10 that the rule needs.
-    steps = [read(i, "src/pkg/module_%d.py" % i) for i in range(13)]
-    steps += [edit(13, "src/pkg/core.py"), submit(14)]
-    findings = BlindSearchDetector().detect(make_trajectory(steps))
-    assert len(findings) == 1
-    assert findings[0].detail["run_length"] == 10
-
-
-def test_exploration_that_converges_on_later_edits_is_not_blind():
-    """Reviewed FP: walking a call chain toward the eventual fix is investigation.
-
-    The reviewed round rejected every blind-search finding because convergent
-    exploration and flailing look identical from streak length alone.  A streak
-    whose inspected files overlap what the agent eventually edited is no longer
-    flagged at all.
-    """
-    steps = [read(i, "src/pkg/module_%d.py" % i) for i in range(13)]
-    steps += [edit(13, "src/pkg/module_5.py"), submit(14)]
-    assert BlindSearchDetector().detect(make_trajectory(steps)) == []
-
-
-def test_exploration_converging_on_the_final_patch_is_not_blind():
-    """Same check against the shipped diff, not just in-run edit steps."""
-    diff = (
-        "diff --git a/src/pkg/module_7.py b/src/pkg/module_7.py\n"
-        "--- a/src/pkg/module_7.py\n"
-        "+++ b/src/pkg/module_7.py\n"
-        "@@ -1,1 +1,2 @@\n"
-        "+x\n"
-    )
-    steps = [read(i, "src/pkg/module_%d.py" % i) for i in range(13)]
-    steps += [submit(13)]
-    trajectory = make_trajectory(steps, model_patch=diff)
-    assert BlindSearchDetector().detect(trajectory) == []
 
 
 def test_no_submit_is_not_reported_twice_when_the_step_budget_ran_out():
@@ -1106,30 +501,6 @@ def test_source_edits_keeps_edit_whose_output_merely_mentions_error():
     step = edit(0, "src/pkg/core.py")
     step.observation = "The file was edited:\n  raise ValueError('error: bad input')"
     assert source_edits(make_trajectory([step])) == [0]
-
-
-def test_weak_verification_not_fired_by_padded_edit_count():
-    """5 rewrites of one region + 1 rejected + docs must not read as 'heavy editing'."""
-    steps = []
-    for i in range(5):
-        s = edit(i, "src/pkg/core.py", payload=f"v{i}")
-        s.args["old_str"] = "def f(x):\n    return x"
-        steps.append(s)
-    bad = edit(5, "src/pkg/core.py"); bad.observation = "ERROR:\nNo replacement was performed"
-    steps += [bad, edit(6, "README.md"), submit(7)]
-    assert WeakVerificationDetector().detect(make_trajectory(steps)) == []
-
-
-def test_loop_detector_ignores_errors_without_a_fingerprint():
-    """Three different failures that share only the placeholder are not a loop."""
-    steps = [
-        shell(0, "python a.py", observation="Exit code: 1"),
-        shell(1, "python b.py", observation="Exit code: 2"),
-        shell(2, "python c.py", observation="Exit code: 3"),
-        submit(3),
-    ]
-    findings = ExecutionLoopDetector().detect(make_trajectory(steps))
-    assert not [f for f in findings if f.detail.get("pattern") == "error"]
 
 
 def test_findings_command_never_emits_a_duplicate_finding_id(tmp_path):

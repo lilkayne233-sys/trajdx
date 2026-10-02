@@ -12,8 +12,8 @@ Two things are errors here:
 
 * a ``core`` detector whose measured precision falls below the target;
 * a ``core`` detector with **no** validated sample in the round, because a tier
-  is a claim about measured precision and "unmeasured" cannot support it.  That
-  is exactly how ``redundant_read`` ended up mis-tiered.
+  is a claim about measured precision and "unmeasured" cannot support it.  A tier
+  is a claim about measured precision, and "unmeasured" cannot support it.
 
 Usage
 -----

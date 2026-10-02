@@ -36,10 +36,7 @@ class Phase(str, Enum):
 class Category(str, Enum):
     """Fine-grained failure category produced by a detector."""
 
-    EXECUTION_LOOP = "execution_loop"
     LOCALIZATION_FAILURE = "localization_failure"
-    BLIND_SEARCH = "blind_search"
-    ENVIRONMENT_STUCK = "environment_stuck"
     EDIT_ERROR = "edit_error"
     VERIFICATION_GAP = "verification_gap"
     TERMINATION_ANOMALY = "termination_anomaly"
@@ -119,7 +116,7 @@ class Detector(ABC):
     """Base class for all rules."""
 
     name: ClassVar[str] = "detector"
-    category: ClassVar[Category] = Category.EXECUTION_LOOP
+    category: ClassVar[Category] = Category.TERMINATION_ANOMALY
     phase: ClassVar[Phase] = Phase.EXECUTION
     tier: ClassVar[Tier] = Tier.EXPERIMENTAL
 

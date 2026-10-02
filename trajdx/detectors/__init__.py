@@ -12,19 +12,10 @@ from trajdx.detectors.base import (
     filter_findings,
     register_detector,
 )
-from trajdx.detectors.environment import EnvironmentStuckDetector
 from trajdx.detectors.edit_error import EditErrorDetector
-from trajdx.detectors.execution_loop import ExecutionLoopDetector
-from trajdx.detectors.localization import (
-    BlindSearchDetector,
-    LocalizationFailureDetector,
-    RedundantReadDetector,
-)
+from trajdx.detectors.localization import LocalizationFailureDetector
 from trajdx.detectors.termination import TerminationAnomalyDetector
-from trajdx.detectors.verification import (
-    VerificationGapDetector,
-    WeakVerificationDetector,
-)
+from trajdx.detectors.verification import VerificationGapDetector
 
 __all__ = [
     "REGISTRY",
@@ -37,13 +28,8 @@ __all__ = [
     "detect_all",
     "filter_findings",
     "register_detector",
-    "BlindSearchDetector",
     "EditErrorDetector",
-    "EnvironmentStuckDetector",
-    "ExecutionLoopDetector",
     "LocalizationFailureDetector",
-    "RedundantReadDetector",
     "TerminationAnomalyDetector",
     "VerificationGapDetector",
-    "WeakVerificationDetector",
 ]

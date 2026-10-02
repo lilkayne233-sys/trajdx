@@ -22,7 +22,7 @@ def record(command="pwd"):
 
 
 def claim(**kwargs):
-    return Finding("execution_loop", Category.EXECUTION_LOOP, Phase.EXECUTION, Severity.HIGH, 0, 2, (1, 2), "same error", detail={"pattern": "error"}, **kwargs)
+    return Finding("edit_error", Category.EDIT_ERROR, Phase.EXECUTION, Severity.HIGH, 0, 2, (1, 2), "same error", detail={"pattern": "error"}, **kwargs)
 
 
 def test_limit_does_not_read_invalid_next_record(tmp_path):
@@ -74,7 +74,7 @@ def test_unversioned_labels_rejected_and_ambiguous_legacy_never_joined(monkeypat
 
 def test_versioned_label_must_match_claim_signature(monkeypatch):
     identity = finding_identity(load_record("pwd"), claim())
-    row = {**identity, "detector": "execution_loop"}
+    row = {**identity, "detector": "edit_error"}
     monkeypatch.setattr(evaluate, "live_findings", lambda raw: ({identity["finding_id"]: row}, 0))
     labels = {identity["finding_id"]: {"verdict": "valid", "finding_signature": "changed"}}
     assert evaluate.join_labels(Path("unused"), labels)[0] == []

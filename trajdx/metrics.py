@@ -165,12 +165,9 @@ def wasted_step_ratio(
     by_phase: Counter[str] = Counter()
     category_phase = {c.value: c for c in Category}
     phase_of = {
-        "execution_loop": Phase.EXECUTION,
-        "environment_stuck": Phase.EXECUTION,
         "termination_anomaly": Phase.EXECUTION,
         "edit_error": Phase.EXECUTION,
         "localization_failure": Phase.PLANNING,
-        "blind_search": Phase.PLANNING,
         "verification_gap": Phase.VERIFICATION,
     }
     for category, count in by_category.items():
