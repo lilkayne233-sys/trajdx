@@ -5,11 +5,11 @@ import json
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-REVIEWED = ROOT / "data" / "labels" / "reviewed_ai_identity_v5.jsonl"
-SUMMARY = ROOT / "data" / "reports" / "review_v5" / "review_summary.json"
-# The review round is defined over the 700-trajectory merged sample; without the
+REVIEWED = ROOT / "data" / "labels" / "reviewed_ai_identity_v6.jsonl"
+SUMMARY = ROOT / "data" / "reports" / "review_v6" / "review_summary.json"
+# The review round is defined over the 1,400-trajectory merged sample; without the
 # gitignored raw file the gate half of this module cannot run.
-RAW = ROOT / "data" / "raw" / "openhands_sample_v4.jsonl"
+RAW = ROOT / "data" / "raw" / "openhands_sample_v6.jsonl"
 
 
 def _rows() -> list[dict]:
@@ -75,7 +75,7 @@ def test_strict_gate_accepts_the_reviewed_labels_but_not_unversioned_ones():
         cwd=ROOT, capture_output=True, text=True,
     )
     assert passing.returncode == 0, passing.stdout + passing.stderr
-    assert "100.0%" in passing.stdout
+    assert "95.5%" in passing.stdout
 
     refusing = subprocess.run(
         [sys.executable, "scripts/check_regression.py", "--labels",

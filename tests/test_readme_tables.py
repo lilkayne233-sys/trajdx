@@ -22,13 +22,13 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 RAW = ROOT / "data" / "raw" / "openhands_sample.jsonl"
-RAW_V4 = ROOT / "data" / "raw" / "openhands_sample_v4.jsonl"
-V5_LABELS = "data/labels/reviewed_ai_identity_v5.jsonl"
+RAW_V6 = ROOT / "data" / "raw" / "openhands_sample_v6.jsonl"
+V6_LABELS = "data/labels/reviewed_ai_identity_v6.jsonl"
 
 
 needs_raw = pytest.mark.skipif(not RAW.exists(), reason="raw trajectories are gitignored")
-needs_raw_v4 = pytest.mark.skipif(
-    not (RAW.exists() and RAW_V4.exists()), reason="raw trajectories are gitignored"
+needs_raw_v6 = pytest.mark.skipif(
+    not (RAW.exists() and RAW_V6.exists()), reason="raw trajectories are gitignored"
 )
 
 
@@ -52,7 +52,7 @@ def _readme(*names: str) -> str:
 # --------------------------------------------------------------------------
 
 
-@needs_raw_v4
+@needs_raw_v6
 def test_readme_detector_table_matches_evaluate():
     """Every generated row must appear verbatim in both READMEs."""
     generated = [
@@ -60,8 +60,8 @@ def test_readme_detector_table_matches_evaluate():
         for line in _run(
             [
                 "scripts/evaluate.py",
-                "--raw", "data/raw/openhands_sample_v4.jsonl",
-                "--labels", V5_LABELS,
+                "--raw", "data/raw/openhands_sample_v6.jsonl",
+                "--labels", V6_LABELS,
                 "--markdown",
             ]
         ).splitlines()
@@ -82,7 +82,7 @@ def test_readme_detector_table_matches_evaluate():
         )
 
 
-@needs_raw_v4
+@needs_raw_v6
 def test_readme_precision_claims_match_sample_size():
     """The prose claims must follow from the table that is actually shipped.
 
@@ -92,8 +92,8 @@ def test_readme_precision_claims_match_sample_size():
     output = _run(
         [
             "scripts/evaluate.py",
-            "--raw", "data/raw/openhands_sample_v4.jsonl",
-            "--labels", V5_LABELS,
+            "--raw", "data/raw/openhands_sample_v6.jsonl",
+            "--labels", V6_LABELS,
             "--markdown",
         ]
     )
@@ -121,6 +121,32 @@ def test_readme_precision_claims_match_sample_size():
     )
 
 
+@needs_raw_v6
+def test_readme_cross_framework_table_matches_evaluate():
+    """The SWE-agent cross-framework table (Table 1b) must also stay verbatim."""
+    if not (ROOT / "data" / "raw" / "sweagent_sample_v1.jsonl").exists():
+        pytest.skip("sweagent sample is gitignored")
+    generated = [
+        line.strip()
+        for line in _run(
+            [
+                "scripts/evaluate.py",
+                "--raw", "data/raw/sweagent_sample_v1.jsonl",
+                "--labels", "data/labels/reviewed_ai_identity_v6_sweagent.jsonl",
+                "--markdown",
+            ]
+        ).splitlines()
+        if line.strip()
+    ]
+    detector_rows = [line for line in generated if line.startswith("| `")]
+    assert detector_rows, "evaluate.py --markdown produced no detector rows"
+
+    for readme in ("README.md", "README.en.md"):
+        text = (ROOT / readme).read_text(encoding="utf-8")
+        for row in detector_rows:
+            assert row in text, f"{readme} is stale, missing cross-framework row:\n  {row}"
+
+
 # --------------------------------------------------------------------------
 # Process-shape metrics
 # --------------------------------------------------------------------------
@@ -128,7 +154,7 @@ def test_readme_precision_claims_match_sample_size():
 
 @pytest.mark.skipif(not RAW.exists(), reason="raw trajectories are gitignored")
 def test_readme_process_shape_matches_discrimination():
-    output = _run(["scripts/discrimination.py"])
+    output = _run(["scripts/discrimination.py", "--data", "data/raw/openhands_sample_v6.jsonl"])
     aucs = dict(re.findall(r"^(\w+)\s+(0\.\d+)$", output, re.M))
     assert aucs, "could not parse AUC values"
 

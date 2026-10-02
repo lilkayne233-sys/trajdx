@@ -44,6 +44,13 @@ def main() -> int:
     ap.add_argument("--out", type=Path, default=Path("data/raw/openhands_sample_v4_add.jsonl"))
     ap.add_argument("--n", type=int, default=400, help="total to draw, split evenly by outcome")
     ap.add_argument("--seed", type=int, default=20261001)
+    ap.add_argument("--outcome-key", default="resolved",
+                    help="record field (truthy) defining the two strata; the SWE-agent "
+                         "pool carries its outcome as 'target' instead")
+    ap.add_argument("--max-per-instance", type=int, default=0,
+                    help="cap how many trajectories of the same instance_id may be drawn "
+                         "(0 = uncapped).  Pools that repeat each instance many times "
+                         "would otherwise produce a clustered, near-duplicate sample.")
     args = ap.parse_args()
 
     existing: set[str] = set()
@@ -59,6 +66,7 @@ def main() -> int:
     quota = args.n // 2
     reservoir: dict[bool, list[tuple[int, str]]] = {True: [], False: []}
     seen: set[str] = set()
+    per_instance: dict[str, int] = {}
     scanned = 0
     with args.pool.open(encoding="utf-8") as fh:
         for offset, line in enumerate(fh):
@@ -69,8 +77,13 @@ def main() -> int:
             key = identity(record)
             if key in existing or key in seen:
                 continue
+            if args.max_per_instance and per_instance.get(record.get("instance_id"), 0) \
+                    >= args.max_per_instance:
+                continue
             seen.add(key)
-            stratum = bool(record.get("resolved"))
+            per_instance[record.get("instance_id")] = \
+                per_instance.get(record.get("instance_id"), 0) + 1
+            stratum = bool(record.get(args.outcome_key))
             bucket = reservoir[stratum]
             pick = random.Random(args.seed + offset).random()
             if len(bucket) < quota:
@@ -81,7 +94,7 @@ def main() -> int:
                 bucket.sort(key=lambda t: t[2])
     counts = {s: len(v) for s, v in reservoir.items()}
     print(f"scanned {scanned} pool records, {len(seen)} new; "
-          f"reservoir resolved={counts[True]} unresolved={counts[False]}")
+          f"reservoir {args.outcome_key}=true {counts[True]} / false {counts[False]}")
 
     wanted = {offset: key for stratum in reservoir.values() for offset, key, _ in stratum}
     args.out.parent.mkdir(parents=True, exist_ok=True)
